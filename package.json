@@ -1,0 +1,35 @@
+{
+  "name": "unifi-camera-proxy",
+  "version": "1.0.0",
+  "description": "ONVIF to UniFi Protect camera proxy",
+  "main": "src/core/index.js",
+  "bin": {
+    "unifi-camera-proxy": "./bin/unifi-camera-proxy"
+  },
+  "scripts": {
+    "start": "sudo node bin/unifi-camera-proxy",
+    "dev": "NODE_ENV=development sudo node bin/unifi-camera-proxy --verbose",
+    "init-config": "node bin/unifi-camera-proxy --init-config config.json",
+    "test": "jest",
+    "lint": "eslint src/"
+  },
+  "keywords": ["unifi", "protect", "onvif", "camera", "proxy"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "onvif": "^0.8.1",
+    "ws": "^8.19.0",
+    "commander": "^14.0.3",
+    "winston": "^3.19.0"
+  },
+  "optionalDependencies": {
+    "node-av": "^5.2.2"
+  },
+  "devDependencies": {
+    "eslint": "^10.0.0",
+    "jest": "^30.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

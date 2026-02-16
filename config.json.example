@@ -1,0 +1,36 @@
+{
+  "unifi": {
+    "host": "192.168.1.1",
+    "port": 7443,
+    "token": "YOUR_ADOPTION_TOKEN_HERE",
+    "reconnect": {
+      "enabled": true,
+      "maxAttempts": 10
+    }
+  },
+  "camera": {
+    "mac": "AABBCCDDEEFF",
+    "ip": "192.168.1.100",
+    "name": "My ONVIF Camera",
+    "model": "UVC G4 Bullet",
+    "firmware": "4.67.55"
+  },
+  "onvif": {
+    "host": "192.168.1.50",
+    "port": 80,
+    "username": "admin",
+    "password": "admin",
+    "motionEnabled": true,
+    "motionPollInterval": 1000
+  },
+  "tls": {
+    "autoGenerate": true
+  },
+  "video": {
+    "useNodeAv": true,
+    "fallbackToFfmpeg": true
+  },
+  "logging": {
+    "level": "info"
+  }
+}
