@@ -31,7 +31,7 @@
     "rtspParity": {
       "enabled": false,
       "pythonPath": "analysis/harness/.venv-loader-probe/bin/python",
-      "scriptPath": "analysis/harness/rtsp_parity_runner.py",
+      "scriptPath": "bin/rtsp-parity-runner.py",
       "rtspUrl": null,
       "detectorBackend": "heuristic",
       "detectorModel": null,

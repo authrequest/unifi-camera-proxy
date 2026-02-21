@@ -20,7 +20,7 @@ class RtspParityBridge {
     const scriptPath =
       typeof this.config.scriptPath === 'string' && this.config.scriptPath
         ? this.config.scriptPath
-        : path.resolve(process.cwd(), 'analysis/harness/rtsp_parity_runner.py');
+        : path.resolve(process.cwd(), 'bin/rtsp-parity-runner.py');
 
     const args = [
       scriptPath,
