@@ -23,6 +23,34 @@
     "motionEnabled": true,
     "motionPollInterval": 1000
   },
+  "detection": {
+    "enabledClasses": ["person", "vehicle", "animal"],
+    "allowUnknownClass": true,
+    "emitSmartEvents": false,
+    "logDecisions": false,
+    "rtspParity": {
+      "enabled": false,
+      "pythonPath": "analysis/harness/.venv-loader-probe/bin/python",
+      "scriptPath": "analysis/harness/rtsp_parity_runner.py",
+      "rtspUrl": null,
+      "detectorBackend": "heuristic",
+      "detectorModel": null,
+      "detectorConfThreshold": 0.35,
+      "detectorNmsThreshold": 0.45,
+      "detectorInputSize": 640,
+      "maxFrames": 0,
+      "motionAreaRatioMin": 0.004,
+      "sleepMs": 0
+    },
+    "minScore": {
+      "person": 0.65,
+      "vehicle": 0.6,
+      "animal": 0.6,
+      "face": 0.75,
+      "licensePlate": 0.8,
+      "default": 0
+    }
+  },
   "tls": {
     "autoGenerate": true
   },

@@ -1,5 +1,6 @@
 const onvif = require('onvif/promises');
 const EventEmitter = require('events');
+const { extractDetectionMetadata } = require('../../services/onvif-detection-parser');
 
 class OnvifProvider extends EventEmitter {
   constructor(config, logger) {
@@ -80,10 +81,11 @@ class OnvifProvider extends EventEmitter {
     const newState = stateItem.$.Value === 'true' || stateItem.$.Value === true;
     if (newState !== this.motionState) {
       this.motionState = newState;
+      const detectionMetadata = extractDetectionMetadata(data);
       if (newState) {
-        this.emit('motion:start');
+        this.emit('motion:start', detectionMetadata);
       } else {
-        this.emit('motion:stop');
+        this.emit('motion:stop', detectionMetadata);
       }
     }
   }

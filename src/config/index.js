@@ -2,12 +2,26 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function envFloat(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 class ConfigManager {
   constructor() {
     this.defaults = {
       unifi: {
         host: process.env.UNIFI_HOST || '192.168.1.1',
-        port: parseInt(process.env.UNIFI_PORT) || 7443,
+        port: envInt('UNIFI_PORT', 7443),
         token: process.env.UNIFI_TOKEN || null,
         reconnect: {
           enabled: true,
@@ -26,11 +40,39 @@ class ConfigManager {
       },
       onvif: {
         host: process.env.ONVIF_HOST || null,
-        port: parseInt(process.env.ONVIF_PORT) || 80,
+        port: envInt('ONVIF_PORT', 80),
         username: process.env.ONVIF_USERNAME || 'admin',
         password: process.env.ONVIF_PASSWORD || 'admin',
         motionEnabled: process.env.MOTION_ENABLED !== 'false',
-        motionPollInterval: parseInt(process.env.MOTION_POLL_INTERVAL) || 1000
+        motionPollInterval: envInt('MOTION_POLL_INTERVAL', 1000)
+      },
+      detection: {
+        enabledClasses: ['person', 'vehicle', 'animal'],
+        allowUnknownClass: true,
+        emitSmartEvents: process.env.DETECTION_EMIT_SMART_EVENTS === 'true',
+        logDecisions: process.env.DETECTION_LOG_DECISIONS === 'true',
+        rtspParity: {
+          enabled: process.env.RTSP_PARITY_ENABLED === 'true',
+          pythonPath: process.env.RTSP_PARITY_PYTHON || null,
+          scriptPath: process.env.RTSP_PARITY_SCRIPT || null,
+          rtspUrl: process.env.RTSP_PARITY_RTSP_URL || null,
+          detectorBackend: process.env.RTSP_PARITY_DETECTOR_BACKEND || 'heuristic',
+          detectorModel: process.env.RTSP_PARITY_DETECTOR_MODEL || null,
+          detectorConfThreshold: envFloat('RTSP_PARITY_DETECTOR_CONF_THRESHOLD', 0.35),
+          detectorNmsThreshold: envFloat('RTSP_PARITY_DETECTOR_NMS_THRESHOLD', 0.45),
+          detectorInputSize: envInt('RTSP_PARITY_DETECTOR_INPUT_SIZE', 640),
+          maxFrames: envInt('RTSP_PARITY_MAX_FRAMES', 0),
+          motionAreaRatioMin: envFloat('RTSP_PARITY_MOTION_AREA_RATIO_MIN', 0),
+          sleepMs: envInt('RTSP_PARITY_SLEEP_MS', 0)
+        },
+        minScore: {
+          person: 0.65,
+          vehicle: 0.6,
+          animal: 0.6,
+          face: 0.75,
+          licensePlate: 0.8,
+          default: 0
+        }
       },
       tls: {
         autoGenerate: true,
@@ -166,6 +208,34 @@ class ConfigManager {
         password: 'admin',
         motionEnabled: true,
         motionPollInterval: 1000
+      },
+      detection: {
+        enabledClasses: ['person', 'vehicle', 'animal'],
+        allowUnknownClass: true,
+        emitSmartEvents: false,
+        logDecisions: false,
+        rtspParity: {
+          enabled: false,
+          pythonPath: null,
+          scriptPath: null,
+          rtspUrl: null,
+          detectorBackend: 'heuristic',
+          detectorModel: null,
+          detectorConfThreshold: 0.35,
+          detectorNmsThreshold: 0.45,
+          detectorInputSize: 640,
+          maxFrames: 0,
+          motionAreaRatioMin: 0,
+          sleepMs: 0
+        },
+        minScore: {
+          person: 0.65,
+          vehicle: 0.6,
+          animal: 0.6,
+          face: 0.75,
+          licensePlate: 0.8,
+          default: 0
+        }
       },
       tls: {
         autoGenerate: true

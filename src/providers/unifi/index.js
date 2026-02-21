@@ -8,7 +8,7 @@ class UnifiProvider extends EventEmitter {
     this.config = config;
     this.logger = logger;
     this.ws = null;
-    this.isConnected = false;
+    this.connected = false;
     this.messageId = 0;
     this.reconnectAttempts = 0;
     this.videoProvider = null;
@@ -45,7 +45,7 @@ class UnifiProvider extends EventEmitter {
 
   handleOpen() {
     this.logger.info('Connected to UniFi Protect');
-    this.isConnected = true;
+    this.connected = true;
     this.reconnectAttempts = 0;
     this.sendHandshake();
   }
@@ -108,7 +108,12 @@ class UnifiProvider extends EventEmitter {
           if (dest && !dest.includes('/dev/null')) {
             const streamName = streamConfig.avSerializer.parameters?.streamName;
             const [host, port] = dest.replace('tcp://', '').split(':');
-            await this.videoProvider.startStream(streamId, streamName, host, parseInt(port));
+            await this.videoProvider.startStream(
+              streamId,
+              streamName,
+              host,
+              Number.parseInt(port, 10)
+            );
           }
         }
       }
@@ -118,7 +123,7 @@ class UnifiProvider extends EventEmitter {
 
   handleClose(code, reason) {
     this.logger.info('Connection closed', { code, reason: reason?.toString() });
-    this.isConnected = false;
+    this.connected = false;
     this.attemptReconnect();
   }
 
@@ -190,6 +195,39 @@ class UnifiProvider extends EventEmitter {
     this.send(this.createResponse('EventAnalytics', 0, payload));
   }
 
+  sendSmartDetectEvent(eventId, state, detection = {}) {
+    if (state !== 'start' && state !== 'stop') return;
+
+    const className = typeof detection.className === 'string' ? detection.className : null;
+    if (!className) return;
+
+    const uptimeMs = Math.floor(process.uptime() * 1000);
+    const wallMs = Date.now();
+    const payload = {
+      clockBestMonotonic: uptimeMs,
+      clockBestWall: wallMs,
+      clockMonotonic: uptimeMs,
+      clockStream: uptimeMs,
+      clockStreamRate: 1000,
+      clockWall: wallMs,
+      edgeType: state === 'start' ? 'enter' : 'leave',
+      eventId: eventId,
+      eventType: 'motion',
+      levels: { '0': state === 'start' ? 47 : 49 },
+      motionHeatmap: '',
+      motionSnapshot: '',
+      objectTypes: [className],
+      smartDetectSnapshot: '',
+      zonesStatus: { '0': 48 }
+    };
+
+    if (typeof detection.score === 'number' && Number.isFinite(detection.score)) {
+      payload.confidence = detection.score;
+    }
+
+    this.send(this.createResponse('EventSmartDetect', 0, payload));
+  }
+
   getVideoSettings() {
     return {
       audio: { bitRate: 32000, channels: 1, enabled: true, sampleRate: 11025, type: 'aac' },
@@ -206,7 +244,7 @@ class UnifiProvider extends EventEmitter {
   }
 
   isConnected() {
-    return this.isConnected;
+    return this.connected;
   }
 
   async disconnect() {
@@ -214,7 +252,7 @@ class UnifiProvider extends EventEmitter {
       this.ws.close();
       this.ws = null;
     }
-    this.isConnected = false;
+    this.connected = false;
   }
 }
 
