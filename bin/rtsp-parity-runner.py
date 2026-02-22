@@ -54,6 +54,10 @@ DEFAULT_IDENTITY_GALLERY_MAX_PROFILES = 2000
 DEFAULT_IDENTITY_GALLERY_SAVE_INTERVAL_FRAMES = 30
 DEFAULT_IDENTITY_GALLERY_MAX_IDLE_MS = 1000 * 60 * 60 * 24 * 30
 DEFAULT_IDENTITY_GALLERY_PRUNE_INTERVAL_FRAMES = 30
+DEFAULT_IDENTITY_SPLIT_GUARD_RATIO = 0.9
+DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN = 3
+DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD = 0.45
+DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN = 5
 
 
 def rect_iou(a: Box, b: Box) -> float:
@@ -324,7 +328,22 @@ def match_embedding_identity(
     embedding: list[float],
     distance_threshold: float,
     timestamp_ms: int | None = None,
+    split_guard_ratio: float = DEFAULT_IDENTITY_SPLIT_GUARD_RATIO,
+    split_guard_max_seen: int = DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN,
+    merge_recover_threshold: float | None = DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
+    merge_recover_min_seen: int = DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
+    reserved_identity_ids: set[str] | None = None,
 ) -> tuple[str, float | None, bool]:
+    normalized_embedding = normalize_embedding_vector(embedding)
+    if normalized_embedding is None:
+        normalized_embedding = [
+            float(value)
+            for value in embedding
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        ]
+    if not normalized_embedding:
+        normalized_embedding = [0.0]
+
     profiles_raw = identity_state.get("profiles")
     profiles: dict[str, dict[str, Any]]
     if isinstance(profiles_raw, dict):
@@ -333,33 +352,72 @@ def match_embedding_identity(
         profiles = {}
         identity_state["profiles"] = profiles
 
-    best_id: str | None = None
-    best_distance: float | None = None
+    candidates: list[tuple[str, float, int, dict[str, Any]]] = []
     for identity_id, profile in profiles.items():
         if not isinstance(profile, dict):
             continue
         stored = profile.get("embedding")
         if not isinstance(stored, list):
             continue
-        distance = embedding_cosine_distance(embedding, stored)
+        distance = embedding_cosine_distance(normalized_embedding, stored)
         if distance is None:
             continue
-        if best_distance is None or distance < best_distance:
-            best_distance = distance
-            best_id = str(identity_id)
+        seen_raw = profile.get("seen", 0)
+        seen = int(seen_raw) if isinstance(seen_raw, (int, float)) else 0
+        candidates.append((str(identity_id), float(distance), max(0, seen), profile))
+
+    candidates.sort(key=lambda item: item[1])
 
     threshold = max(0.0, min(2.0, float(distance_threshold)))
-    if best_id is not None and best_distance is not None and best_distance <= threshold:
-        profile = profiles.get(best_id) or {}
+    split_ratio = max(0.0, min(1.0, float(split_guard_ratio)))
+    split_seen_limit = max(0, int(split_guard_max_seen))
+    merge_threshold = (
+        max(threshold, min(2.0, float(merge_recover_threshold)))
+        if isinstance(merge_recover_threshold, (int, float))
+        and math.isfinite(float(merge_recover_threshold))
+        else threshold
+    )
+    merge_seen_min = max(1, int(merge_recover_min_seen))
+    reserved = set(reserved_identity_ids or set())
+
+    chosen: tuple[str, float, int, dict[str, Any]] | None = None
+    for identity_id, candidate_distance, candidate_seen, profile in candidates:
+        if candidate_distance > threshold:
+            break
+        if identity_id in reserved:
+            continue
+        split_guard_floor = threshold * split_ratio
+        if (
+            split_seen_limit > 0
+            and candidate_seen <= split_seen_limit
+            and candidate_distance > split_guard_floor
+        ):
+            continue
+        chosen = (identity_id, candidate_distance, candidate_seen, profile)
+        break
+
+    if chosen is None and merge_threshold > threshold:
+        for identity_id, candidate_distance, candidate_seen, profile in candidates:
+            if candidate_distance > merge_threshold:
+                break
+            if identity_id in reserved:
+                continue
+            if candidate_seen < merge_seen_min:
+                continue
+            chosen = (identity_id, candidate_distance, candidate_seen, profile)
+            break
+
+    if chosen is not None:
+        best_id, best_distance, _best_seen, profile = chosen
         seen = int(profile.get("seen", 0)) + 1
         stored = profile.get("embedding")
-        updated = embedding
-        if isinstance(stored, list) and len(stored) == len(embedding):
+        updated = normalized_embedding
+        if isinstance(stored, list) and len(stored) == len(normalized_embedding):
             momentum = (seen - 1) / float(max(1, seen))
             mixed = [
                 (float(stored[idx]) * momentum)
-                + (float(embedding[idx]) * (1.0 - momentum))
-                for idx in range(len(embedding))
+                + (float(normalized_embedding[idx]) * (1.0 - momentum))
+                for idx in range(len(normalized_embedding))
             ]
             normalized = normalize_embedding_vector(mixed)
             if normalized is not None:
@@ -380,7 +438,7 @@ def match_embedding_identity(
     next_id = int(identity_state.get("next_id", 1))
     new_identity = f"person-{next_id}"
     profiles[new_identity] = {
-        "embedding": list(embedding),
+        "embedding": list(normalized_embedding),
         "seen": 1,
         "lastSeenMs": int(timestamp_ms) if isinstance(timestamp_ms, int) else 0,
     }
@@ -594,6 +652,38 @@ def prune_identity_gallery(
     return removed_ids
 
 
+def evaluate_identity_candidate_quality(
+    face_detection: dict[str, Any],
+    frame_area: int,
+    landmarks: list[tuple[float, float]] | None,
+    min_face_score: float,
+    min_face_area_ratio: float,
+    require_landmarks: bool,
+) -> tuple[bool, str | None]:
+    score = face_detection.get("score")
+    if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+        return False, "low_score"
+    if float(score) < float(min_face_score):
+        return False, "low_score"
+
+    bbox = face_detection.get("bbox")
+    if not isinstance(bbox, tuple) or len(bbox) != 4:
+        return False, "invalid_bbox"
+    x, y, w, h = bbox
+    if any(not isinstance(value, (int, float)) for value in (x, y, w, h)):
+        return False, "invalid_bbox"
+
+    area_ratio = (float(w) * float(h)) / float(max(1, int(frame_area)))
+    if area_ratio < float(min_face_area_ratio):
+        return False, "small_face"
+
+    if require_landmarks:
+        if not isinstance(landmarks, list) or len(landmarks) < 3:
+            return False, "missing_landmarks"
+
+    return True, None
+
+
 def landmark_guided_bbox(
     landmarks: list[tuple[float, float]],
     image_width: int,
@@ -661,6 +751,14 @@ def create_detector(
     smartface_extract_bin: str | None = None,
     smartface_identity_distance_threshold: float = 0.35,
     smartface_identity_stable_frames: int = 2,
+    smartface_identity_min_face_score: float = 0.75,
+    smartface_identity_min_face_area_ratio: float = 0.0012,
+    smartface_identity_require_landmarks: bool = False,
+    smartface_identity_split_guard_ratio: float = DEFAULT_IDENTITY_SPLIT_GUARD_RATIO,
+    smartface_identity_split_guard_max_seen: int = DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN,
+    smartface_identity_merge_recover_threshold: float = DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
+    smartface_identity_merge_recover_min_seen: int = DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
+    smartface_identity_prevent_duplicate_per_frame: bool = True,
 ) -> dict[str, Any]:
     normalized = str(backend or "heuristic").strip().lower()
     if normalized == "heuristic":
@@ -837,6 +935,28 @@ def create_detector(
                 max(0.0, min(2.0, smartface_identity_distance_threshold))
             ),
             "identity_stable_frames": max(1, int(smartface_identity_stable_frames)),
+            "identity_min_face_score": float(
+                max(0.0, min(1.0, smartface_identity_min_face_score))
+            ),
+            "identity_min_face_area_ratio": float(
+                max(0.0, min(1.0, smartface_identity_min_face_area_ratio))
+            ),
+            "identity_require_landmarks": bool(smartface_identity_require_landmarks),
+            "identity_split_guard_ratio": float(
+                max(0.0, min(1.0, smartface_identity_split_guard_ratio))
+            ),
+            "identity_split_guard_max_seen": max(
+                0, int(smartface_identity_split_guard_max_seen)
+            ),
+            "identity_merge_recover_threshold": float(
+                max(0.0, min(2.0, smartface_identity_merge_recover_threshold))
+            ),
+            "identity_merge_recover_min_seen": max(
+                1, int(smartface_identity_merge_recover_min_seen)
+            ),
+            "identity_prevent_duplicate_per_frame": bool(
+                smartface_identity_prevent_duplicate_per_frame
+            ),
             "lmk_model": lmk_state,
             "extract_model": extract_state,
             "ncnn": ncnn_state,
@@ -1724,6 +1844,74 @@ def run_parity(config: dict[str, Any]) -> int:
         1,
         int(config.get("smartface_identity_stable_frames", 2)),
     )
+    smartface_identity_min_face_score = float(
+        config.get("smartface_identity_min_face_score", 0.75)
+    )
+    smartface_identity_min_face_area_ratio = float(
+        config.get("smartface_identity_min_face_area_ratio", 0.0012)
+    )
+    smartface_identity_require_landmarks_raw = config.get(
+        "smartface_identity_require_landmarks",
+        False,
+    )
+    if isinstance(smartface_identity_require_landmarks_raw, bool):
+        smartface_identity_require_landmarks = smartface_identity_require_landmarks_raw
+    elif isinstance(smartface_identity_require_landmarks_raw, str):
+        smartface_identity_require_landmarks = (
+            smartface_identity_require_landmarks_raw.strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+    else:
+        smartface_identity_require_landmarks = bool(
+            smartface_identity_require_landmarks_raw
+        )
+    smartface_identity_split_guard_ratio = float(
+        config.get(
+            "smartface_identity_split_guard_ratio",
+            DEFAULT_IDENTITY_SPLIT_GUARD_RATIO,
+        )
+    )
+    smartface_identity_split_guard_max_seen = max(
+        0,
+        int(
+            config.get(
+                "smartface_identity_split_guard_max_seen",
+                DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN,
+            )
+        ),
+    )
+    smartface_identity_merge_recover_threshold = float(
+        config.get(
+            "smartface_identity_merge_recover_threshold",
+            DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
+        )
+    )
+    smartface_identity_merge_recover_min_seen = max(
+        1,
+        int(
+            config.get(
+                "smartface_identity_merge_recover_min_seen",
+                DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
+            )
+        ),
+    )
+    smartface_identity_prevent_duplicate_per_frame_raw = config.get(
+        "smartface_identity_prevent_duplicate_per_frame",
+        True,
+    )
+    if isinstance(smartface_identity_prevent_duplicate_per_frame_raw, bool):
+        smartface_identity_prevent_duplicate_per_frame = (
+            smartface_identity_prevent_duplicate_per_frame_raw
+        )
+    elif isinstance(smartface_identity_prevent_duplicate_per_frame_raw, str):
+        smartface_identity_prevent_duplicate_per_frame = (
+            smartface_identity_prevent_duplicate_per_frame_raw.strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+    else:
+        smartface_identity_prevent_duplicate_per_frame = bool(
+            smartface_identity_prevent_duplicate_per_frame_raw
+        )
     identity_gallery_path = config.get("identity_gallery_path")
     identity_gallery_max_profiles = max(
         1,
@@ -1786,6 +1974,14 @@ def run_parity(config: dict[str, Any]) -> int:
         ),
         smartface_identity_distance_threshold=smartface_identity_distance_threshold,
         smartface_identity_stable_frames=smartface_identity_stable_frames,
+        smartface_identity_min_face_score=smartface_identity_min_face_score,
+        smartface_identity_min_face_area_ratio=smartface_identity_min_face_area_ratio,
+        smartface_identity_require_landmarks=smartface_identity_require_landmarks,
+        smartface_identity_split_guard_ratio=smartface_identity_split_guard_ratio,
+        smartface_identity_split_guard_max_seen=smartface_identity_split_guard_max_seen,
+        smartface_identity_merge_recover_threshold=smartface_identity_merge_recover_threshold,
+        smartface_identity_merge_recover_min_seen=smartface_identity_merge_recover_min_seen,
+        smartface_identity_prevent_duplicate_per_frame=smartface_identity_prevent_duplicate_per_frame,
     )
 
     emit_json(
@@ -1843,6 +2039,11 @@ def run_parity(config: dict[str, Any]) -> int:
             stable_identity_ids: set[str] = set()
             identity_distance_threshold: float | None = None
             identity_stable_frames_threshold: int | None = None
+            identity_min_face_score: float | None = None
+            identity_min_face_area_ratio: float | None = None
+            identity_require_landmarks: bool | None = None
+            identity_rejected_count = 0
+            identity_reject_reasons: dict[str, int] = {}
             now_ms = int(time.time() * 1000)
 
             if (
@@ -1915,16 +2116,51 @@ def run_parity(config: dict[str, Any]) -> int:
                 identity_stable_frames_threshold = int(
                     detector.get("identity_stable_frames", 2)
                 )
+                identity_min_face_score = float(
+                    detector.get("identity_min_face_score", face_threshold)
+                )
+                identity_min_face_area_ratio = float(
+                    detector.get("identity_min_face_area_ratio", 0.0012)
+                )
+                identity_require_landmarks = bool(
+                    detector.get("identity_require_landmarks", False)
+                )
                 identity_seen_this_frame: set[str] = set()
                 for face_det in stable_face_dets:
                     bbox = face_det.get("bbox")
                     if not isinstance(bbox, tuple) or len(bbox) != 4:
+                        identity_rejected_count += 1
+                        identity_reject_reasons["invalid_bbox"] = (
+                            int(identity_reject_reasons.get("invalid_bbox", 0)) + 1
+                        )
                         continue
 
                     embedding, _landmarks = extract_face_embedding(
                         detector, frame, bbox
                     )
                     if not isinstance(embedding, list):
+                        identity_rejected_count += 1
+                        identity_reject_reasons["missing_embedding"] = (
+                            int(identity_reject_reasons.get("missing_embedding", 0)) + 1
+                        )
+                        continue
+
+                    accepted_quality, reject_reason = (
+                        evaluate_identity_candidate_quality(
+                            face_detection=face_det,
+                            frame_area=frame_area,
+                            landmarks=_landmarks,
+                            min_face_score=float(identity_min_face_score),
+                            min_face_area_ratio=float(identity_min_face_area_ratio),
+                            require_landmarks=bool(identity_require_landmarks),
+                        )
+                    )
+                    if not accepted_quality:
+                        identity_rejected_count += 1
+                        if isinstance(reject_reason, str) and reject_reason:
+                            identity_reject_reasons[reject_reason] = (
+                                int(identity_reject_reasons.get(reject_reason, 0)) + 1
+                            )
                         continue
 
                     identity_id, distance, _is_new = match_embedding_identity(
@@ -1932,6 +2168,40 @@ def run_parity(config: dict[str, Any]) -> int:
                         embedding=embedding,
                         distance_threshold=identity_distance_threshold,
                         timestamp_ms=now_ms,
+                        split_guard_ratio=float(
+                            detector.get(
+                                "identity_split_guard_ratio",
+                                DEFAULT_IDENTITY_SPLIT_GUARD_RATIO,
+                            )
+                        ),
+                        split_guard_max_seen=int(
+                            detector.get(
+                                "identity_split_guard_max_seen",
+                                DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN,
+                            )
+                        ),
+                        merge_recover_threshold=float(
+                            detector.get(
+                                "identity_merge_recover_threshold",
+                                DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
+                            )
+                        ),
+                        merge_recover_min_seen=int(
+                            detector.get(
+                                "identity_merge_recover_min_seen",
+                                DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
+                            )
+                        ),
+                        reserved_identity_ids=(
+                            set(identity_seen_this_frame)
+                            if bool(
+                                detector.get(
+                                    "identity_prevent_duplicate_per_frame",
+                                    True,
+                                )
+                            )
+                            else None
+                        ),
                     )
                     identity_state_dirty = True
                     face_det["identityId"] = identity_id
@@ -2095,6 +2365,26 @@ def run_parity(config: dict[str, Any]) -> int:
                     "identityProfileCount": len(identity_state.get("profiles", {})),
                     "identityDistanceThreshold": identity_distance_threshold,
                     "identityStableFramesThreshold": identity_stable_frames_threshold,
+                    "identityMinFaceScore": identity_min_face_score,
+                    "identityMinFaceAreaRatio": identity_min_face_area_ratio,
+                    "identityRequireLandmarks": identity_require_landmarks,
+                    "identitySplitGuardRatio": detector.get(
+                        "identity_split_guard_ratio"
+                    ),
+                    "identitySplitGuardMaxSeen": detector.get(
+                        "identity_split_guard_max_seen"
+                    ),
+                    "identityMergeRecoverThreshold": detector.get(
+                        "identity_merge_recover_threshold"
+                    ),
+                    "identityMergeRecoverMinSeen": detector.get(
+                        "identity_merge_recover_min_seen"
+                    ),
+                    "identityPreventDuplicatePerFrame": detector.get(
+                        "identity_prevent_duplicate_per_frame"
+                    ),
+                    "identityRejectedCount": identity_rejected_count,
+                    "identityRejectReasons": identity_reject_reasons,
                     "faceScoreTelemetry": face_score_telemetry,
                     "motionBoxCount": len(motion_boxes),
                     "detectorBackend": detector.get("name"),
@@ -2247,6 +2537,54 @@ def parse_args() -> argparse.Namespace:
         help="Consecutive frames required before emitting identity transitions",
     )
     parser.add_argument(
+        "--smartface-identity-min-face-score",
+        type=float,
+        default=0.75,
+        help="Minimum face score required before identity matching",
+    )
+    parser.add_argument(
+        "--smartface-identity-min-face-area-ratio",
+        type=float,
+        default=0.0012,
+        help="Minimum bbox area ratio required before identity matching",
+    )
+    parser.add_argument(
+        "--smartface-identity-require-landmarks",
+        action="store_true",
+        help="Require valid landmarks before identity matching",
+    )
+    parser.add_argument(
+        "--smartface-identity-split-guard-ratio",
+        type=float,
+        default=DEFAULT_IDENTITY_SPLIT_GUARD_RATIO,
+        help="Near-threshold ratio that triggers split correction for low-seen profiles",
+    )
+    parser.add_argument(
+        "--smartface-identity-split-guard-max-seen",
+        type=int,
+        default=DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN,
+        help="Maximum seen-count considered low confidence for split guard",
+    )
+    parser.add_argument(
+        "--smartface-identity-merge-recover-threshold",
+        type=float,
+        default=DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
+        help="Upper distance threshold used to recover accidental identity splits",
+    )
+    parser.add_argument(
+        "--smartface-identity-merge-recover-min-seen",
+        type=int,
+        default=DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
+        help="Minimum profile seen-count required for merge-recovery reuse",
+    )
+    parser.add_argument(
+        "--smartface-identity-allow-duplicate-per-frame",
+        dest="smartface_identity_prevent_duplicate_per_frame",
+        action="store_false",
+        help="Allow assigning one identity to multiple faces in the same frame",
+    )
+    parser.set_defaults(smartface_identity_prevent_duplicate_per_frame=True)
+    parser.add_argument(
         "--identity-gallery-path",
         default=None,
         help="Optional JSON path for persisted identity gallery",
@@ -2306,6 +2644,36 @@ def main() -> int:
         "smartface_identity_stable_frames": max(
             1,
             int(args.smartface_identity_stable_frames),
+        ),
+        "smartface_identity_min_face_score": max(
+            0.0,
+            min(1.0, float(args.smartface_identity_min_face_score)),
+        ),
+        "smartface_identity_min_face_area_ratio": max(
+            0.0,
+            min(1.0, float(args.smartface_identity_min_face_area_ratio)),
+        ),
+        "smartface_identity_require_landmarks": bool(
+            args.smartface_identity_require_landmarks
+        ),
+        "smartface_identity_split_guard_ratio": max(
+            0.0,
+            min(1.0, float(args.smartface_identity_split_guard_ratio)),
+        ),
+        "smartface_identity_split_guard_max_seen": max(
+            0,
+            int(args.smartface_identity_split_guard_max_seen),
+        ),
+        "smartface_identity_merge_recover_threshold": max(
+            0.0,
+            min(2.0, float(args.smartface_identity_merge_recover_threshold)),
+        ),
+        "smartface_identity_merge_recover_min_seen": max(
+            1,
+            int(args.smartface_identity_merge_recover_min_seen),
+        ),
+        "smartface_identity_prevent_duplicate_per_frame": bool(
+            args.smartface_identity_prevent_duplicate_per_frame
         ),
         "identity_gallery_path": args.identity_gallery_path,
         "identity_gallery_max_profiles": max(

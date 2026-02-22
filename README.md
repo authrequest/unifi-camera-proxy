@@ -88,12 +88,24 @@ For SmartFace-assisted face events, use:
   - `detection.rtspParity.identityGallerySaveIntervalFrames`
   - `detection.rtspParity.identityGalleryMaxIdleMs`
   - `detection.rtspParity.identityGalleryPruneIntervalFrames`
+- Optional identity quality gate settings:
+  - `detection.rtspParity.smartfaceIdentityMinFaceScore`
+  - `detection.rtspParity.smartfaceIdentityMinFaceAreaRatio`
+  - `detection.rtspParity.smartfaceIdentityRequireLandmarks`
+- Optional identity merge/split correction settings:
+  - `detection.rtspParity.smartfaceIdentitySplitGuardRatio`
+  - `detection.rtspParity.smartfaceIdentitySplitGuardMaxSeen`
+  - `detection.rtspParity.smartfaceIdentityMergeRecoverThreshold`
+  - `detection.rtspParity.smartfaceIdentityMergeRecoverMinSeen`
+  - `detection.rtspParity.smartfaceIdentityPreventDuplicatePerFrame`
 
 The backend keeps person/vehicle inference and adds face detection with score gating and frame-stability filtering.
 When `smartface_ncnn` is used, the runner decodes face boxes from the enroll model stride heads (`classification_stride_*` + `regression_stride_*`) and applies NMS before score/stability gates.
 If `lmk` + `extract` models are available, the runner also emits `EventSmartDetectIdentity` with stable per-person IDs from embedding matching.
 If `identityGalleryPath` is set, those identity profiles are saved and reloaded so IDs survive process restarts.
 If `identityGalleryMaxIdleMs` is set, profiles that have not been seen for longer than that time are removed automatically.
+Identity quality gate settings help prevent weak detections from being saved into the gallery.
+Merge/split correction settings reduce duplicate IDs and accidental identity merges.
 
 `ParityFrameSummary` now includes SmartFace tuning telemetry in `payload`:
 
@@ -103,6 +115,9 @@ If `identityGalleryMaxIdleMs` is set, profiles that have not been seen for longe
 - `stableFaceCount`, `smartfaceMinScoreThreshold`, and `smartfaceStableFramesThreshold`
 - `identityIds`, `identityCount`, `identityCandidateCount`, and `identityProfileCount`
 - `identityDistanceThreshold` and `identityStableFramesThreshold`
+- `identityMinFaceScore`, `identityMinFaceAreaRatio`, and `identityRequireLandmarks`
+- `identitySplitGuardRatio`, `identitySplitGuardMaxSeen`, `identityMergeRecoverThreshold`, `identityMergeRecoverMinSeen`, and `identityPreventDuplicatePerFrame`
+- `identityRejectedCount` and `identityRejectReasons`
 
 Suggested tuning loop:
 

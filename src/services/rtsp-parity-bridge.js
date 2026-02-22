@@ -141,6 +141,80 @@ class RtspParityBridge {
       );
     }
 
+    if (
+      typeof this.config.smartfaceIdentityMinFaceScore === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMinFaceScore) &&
+      this.config.smartfaceIdentityMinFaceScore >= 0
+    ) {
+      args.push(
+        '--smartface-identity-min-face-score',
+        String(this.config.smartfaceIdentityMinFaceScore)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMinFaceAreaRatio === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMinFaceAreaRatio) &&
+      this.config.smartfaceIdentityMinFaceAreaRatio >= 0
+    ) {
+      args.push(
+        '--smartface-identity-min-face-area-ratio',
+        String(this.config.smartfaceIdentityMinFaceAreaRatio)
+      );
+    }
+
+    if (this.config.smartfaceIdentityRequireLandmarks === true) {
+      args.push('--smartface-identity-require-landmarks');
+    }
+
+    if (
+      typeof this.config.smartfaceIdentitySplitGuardRatio === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentitySplitGuardRatio) &&
+      this.config.smartfaceIdentitySplitGuardRatio >= 0
+    ) {
+      args.push(
+        '--smartface-identity-split-guard-ratio',
+        String(this.config.smartfaceIdentitySplitGuardRatio)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentitySplitGuardMaxSeen === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentitySplitGuardMaxSeen) &&
+      this.config.smartfaceIdentitySplitGuardMaxSeen >= 0
+    ) {
+      args.push(
+        '--smartface-identity-split-guard-max-seen',
+        String(this.config.smartfaceIdentitySplitGuardMaxSeen)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMergeRecoverThreshold === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMergeRecoverThreshold) &&
+      this.config.smartfaceIdentityMergeRecoverThreshold >= 0
+    ) {
+      args.push(
+        '--smartface-identity-merge-recover-threshold',
+        String(this.config.smartfaceIdentityMergeRecoverThreshold)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMergeRecoverMinSeen === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMergeRecoverMinSeen) &&
+      this.config.smartfaceIdentityMergeRecoverMinSeen > 0
+    ) {
+      args.push(
+        '--smartface-identity-merge-recover-min-seen',
+        String(this.config.smartfaceIdentityMergeRecoverMinSeen)
+      );
+    }
+
+    if (this.config.smartfaceIdentityPreventDuplicatePerFrame === false) {
+      args.push('--smartface-identity-allow-duplicate-per-frame');
+    }
+
     if (typeof this.config.identityGalleryPath === 'string' && this.config.identityGalleryPath) {
       args.push('--identity-gallery-path', this.config.identityGalleryPath);
     }
