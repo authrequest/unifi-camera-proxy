@@ -15,7 +15,7 @@ class RtspParityBridge {
     const pythonPath =
       typeof this.config.pythonPath === 'string' && this.config.pythonPath
         ? this.config.pythonPath
-        : path.resolve(process.cwd(), 'analysis/harness/.venv-loader-probe/bin/python');
+        : 'python3';
 
     const scriptPath =
       typeof this.config.scriptPath === 'string' && this.config.scriptPath
@@ -70,6 +70,34 @@ class RtspParityBridge {
 
     if (typeof this.config.detectorInputSize === 'number' && this.config.detectorInputSize > 0) {
       args.push('--detector-input-size', String(this.config.detectorInputSize));
+    }
+
+    if (typeof this.config.smartfaceParam === 'string' && this.config.smartfaceParam) {
+      args.push('--smartface-param', this.config.smartfaceParam);
+    }
+
+    if (typeof this.config.smartfaceBin === 'string' && this.config.smartfaceBin) {
+      args.push('--smartface-bin', this.config.smartfaceBin);
+    }
+
+    if (typeof this.config.smartfaceInputSize === 'number' && this.config.smartfaceInputSize > 0) {
+      args.push('--smartface-input-size', String(this.config.smartfaceInputSize));
+    }
+
+    if (
+      typeof this.config.smartfaceMinScore === 'number' &&
+      Number.isFinite(this.config.smartfaceMinScore) &&
+      this.config.smartfaceMinScore >= 0
+    ) {
+      args.push('--smartface-min-score', String(this.config.smartfaceMinScore));
+    }
+
+    if (
+      typeof this.config.smartfaceStableFrames === 'number' &&
+      Number.isFinite(this.config.smartfaceStableFrames) &&
+      this.config.smartfaceStableFrames > 0
+    ) {
+      args.push('--smartface-stable-frames', String(this.config.smartfaceStableFrames));
     }
 
     return { pythonPath, args };

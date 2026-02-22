@@ -61,8 +61,13 @@ class ConfigManager {
           detectorConfThreshold: envFloat('RTSP_PARITY_DETECTOR_CONF_THRESHOLD', 0.35),
           detectorNmsThreshold: envFloat('RTSP_PARITY_DETECTOR_NMS_THRESHOLD', 0.45),
           detectorInputSize: envInt('RTSP_PARITY_DETECTOR_INPUT_SIZE', 640),
+          smartfaceParam: process.env.RTSP_PARITY_SMARTFACE_PARAM || null,
+          smartfaceBin: process.env.RTSP_PARITY_SMARTFACE_BIN || null,
+          smartfaceInputSize: envInt('RTSP_PARITY_SMARTFACE_INPUT_SIZE', 112),
+          smartfaceMinScore: envFloat('RTSP_PARITY_SMARTFACE_MIN_SCORE', 0.75),
+          smartfaceStableFrames: envInt('RTSP_PARITY_SMARTFACE_STABLE_FRAMES', 2),
           maxFrames: envInt('RTSP_PARITY_MAX_FRAMES', 0),
-          motionAreaRatioMin: envFloat('RTSP_PARITY_MOTION_AREA_RATIO_MIN', 0),
+          motionAreaRatioMin: envFloat('RTSP_PARITY_MOTION_AREA_RATIO_MIN', 0.004),
           sleepMs: envInt('RTSP_PARITY_SLEEP_MS', 0)
         },
         minScore: {
@@ -224,8 +229,13 @@ class ConfigManager {
           detectorConfThreshold: 0.35,
           detectorNmsThreshold: 0.45,
           detectorInputSize: 640,
+          smartfaceParam: null,
+          smartfaceBin: null,
+          smartfaceInputSize: 112,
+          smartfaceMinScore: 0.75,
+          smartfaceStableFrames: 2,
           maxFrames: 0,
-          motionAreaRatioMin: 0,
+          motionAreaRatioMin: 0.004,
           sleepMs: 0
         },
         minScore: {

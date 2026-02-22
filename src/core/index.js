@@ -5,6 +5,9 @@ const { DiscoveryService } = require('../services/discovery');
 const { RtspParityBridge } = require('../services/rtsp-parity-bridge');
 const { TlsCertificate } = require('../domain/tls-certificate');
 const { DetectionGate } = require('../services/detection-gate');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const DECISION_REASON_LABELS = {
   invalid_phase: 'Invalid phase',
@@ -41,9 +44,9 @@ class CameraProxy {
   async start() {
     this.logger.info('Initializing camera proxy');
 
-    const configDir = require('path').join(require('os').homedir(), '.unifi-camera-proxy');
-    if (!require('fs').existsSync(configDir)) {
-      require('fs').mkdirSync(configDir, { recursive: true });
+    const configDir = path.join(os.homedir(), '.unifi-camera-proxy');
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
     }
 
     this.resources.tls = new TlsCertificate(this.config.tls, this.logger);
@@ -74,25 +77,77 @@ class CameraProxy {
 
     if (this.rtspParityEnabled) {
       const configuredParity = this.config?.detection?.rtspParity || {};
-      const rtspUrl = configuredParity.rtspUrl || this.providers.onvif.getStreamUrl();
+      const backend = String(configuredParity.detectorBackend || '').trim().toLowerCase();
+      const hasSmartfaceParam =
+        typeof configuredParity.smartfaceParam === 'string' &&
+        configuredParity.smartfaceParam.trim().length > 0;
+      const hasSmartfaceBin =
+        typeof configuredParity.smartfaceBin === 'string' &&
+        configuredParity.smartfaceBin.trim().length > 0;
 
-      if (!rtspUrl) {
-        this.logger.warn('RTSP parity enabled but no stream URL available; parity runner disabled');
+      if (backend === 'smartface_ncnn' && (!hasSmartfaceParam || !hasSmartfaceBin)) {
+        this.logger.warn(
+          'RTSP parity smartface_ncnn requires smartfaceParam and smartfaceBin; parity runner disabled'
+        );
         this.rtspParityEnabled = false;
-      } else {
-        try {
-          this.services.rtspParity = new RtspParityBridge(
-            {
-              ...configuredParity,
-              rtspUrl
-            },
-            this.logger
-          );
+      }
 
-          this.services.rtspParity.start((message) => this.handleRtspParityMessage(message));
-        } catch (err) {
-          this.logger.error('Failed to start RTSP parity bridge, falling back to ONVIF motion', err);
+      if (backend === 'smartface_ncnn' && this.rtspParityEnabled) {
+        const smartfaceParam = String(configuredParity.smartfaceParam || '').trim();
+        const smartfaceBin = String(configuredParity.smartfaceBin || '').trim();
+        const paramExists = fs.existsSync(smartfaceParam);
+        const binExists = fs.existsSync(smartfaceBin);
+
+        if (!paramExists || !binExists) {
+          this.logger.warn(
+            'RTSP parity smartface_ncnn model file missing; parity runner disabled',
+            {
+              smartfaceParam,
+              smartfaceBin
+            }
+          );
           this.rtspParityEnabled = false;
+        }
+      }
+
+      if (this.rtspParityEnabled) {
+        const configuredScriptPath =
+          typeof configuredParity.scriptPath === 'string' && configuredParity.scriptPath.trim().length > 0
+            ? configuredParity.scriptPath.trim()
+            : path.resolve(process.cwd(), 'bin/rtsp-parity-runner.py');
+        const resolvedScriptPath = path.isAbsolute(configuredScriptPath)
+          ? configuredScriptPath
+          : path.resolve(process.cwd(), configuredScriptPath);
+
+        if (!fs.existsSync(resolvedScriptPath)) {
+          this.logger.warn('RTSP parity script path does not exist; parity runner disabled', {
+            scriptPath: resolvedScriptPath
+          });
+          this.rtspParityEnabled = false;
+        }
+      }
+
+      if (this.rtspParityEnabled) {
+        const rtspUrl = configuredParity.rtspUrl || this.providers.onvif.getStreamUrl();
+
+        if (!rtspUrl) {
+          this.logger.warn('RTSP parity enabled but no stream URL available; parity runner disabled');
+          this.rtspParityEnabled = false;
+        } else {
+          try {
+            this.services.rtspParity = new RtspParityBridge(
+              {
+                ...configuredParity,
+                rtspUrl
+              },
+              this.logger
+            );
+
+            this.services.rtspParity.start((message) => this.handleRtspParityMessage(message));
+          } catch (err) {
+            this.logger.error('Failed to start RTSP parity bridge, falling back to ONVIF motion', err);
+            this.rtspParityEnabled = false;
+          }
         }
       }
     }
@@ -113,6 +168,21 @@ class CameraProxy {
 
   handleRtspParityMessage(message = {}) {
     if (!message || typeof message !== 'object') return;
+
+    if (message.functionName === 'ParityStartup') {
+      const payload = message.payload && typeof message.payload === 'object'
+        ? message.payload
+        : {};
+      this.logger.info('RTSP parity startup', {
+        secureRtsp: payload.secureRtsp === true,
+        rtspScheme: typeof payload.rtspScheme === 'string' ? payload.rtspScheme : null,
+        captureStrategy:
+          typeof payload.captureStrategy === 'string' ? payload.captureStrategy : null,
+        detectorBackend:
+          typeof payload.detectorBackend === 'string' ? payload.detectorBackend : null
+      });
+      return;
+    }
 
     if (message.functionName === 'ParityFrameSummary') {
       if (this.config?.detection?.logDecisions) {

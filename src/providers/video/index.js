@@ -40,6 +40,18 @@ class VideoProvider extends EventEmitter {
     this.sourceUrl = url;
   }
 
+  buildRtspInputArgs(sourceUrl) {
+    const normalized = String(sourceUrl || '').trim().toLowerCase();
+    const args = ['-rtsp_transport', 'tcp'];
+
+    if (normalized.startsWith('rtsps://')) {
+      args.push('-rtsp_flags', 'prefer_tcp', '-tls_verify', '0');
+    }
+
+    args.push('-i', sourceUrl);
+    return args;
+  }
+
   async startStream(streamId, streamName, destHost, destPort) {
     if (!this.sourceUrl) {
       this.logger.error('No source URL set');
@@ -108,8 +120,7 @@ class VideoProvider extends EventEmitter {
       '-nostdin', '-loglevel', 'error', '-y',
       '-fflags', '+genpts+discardcorrupt',
       '-use_wallclock_as_timestamps', '1',
-      '-rtsp_transport', 'tcp',
-      '-i', this.sourceUrl,
+      ...this.buildRtspInputArgs(this.sourceUrl),
       '-c:v', 'copy', '-c:a', 'aac',
       '-ar', '32000', '-ac', '1', '-b:a', '32000',
       '-f', 'flv', '-metadata', 'streamName=' + streamName,

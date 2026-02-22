@@ -44,14 +44,32 @@ class OnvifProvider extends EventEmitter {
   async loadStreamUrl() {
     try {
       const uri = await this.device.getStreamUri({ protocol: 'RTSP', stream: 'RTP-Unicast' });
-      let url = uri.uri;
-      if (this.config.username && this.config.password) {
-        url = url.replace('://', '://' + this.config.username + ':' + this.config.password + '@');
-      }
+      const url = this.injectCredentials(uri.uri);
       this.streamUrl = url;
       this.logger.info('Stream URL loaded');
     } catch (err) {
       this.logger.error('Failed to load stream URL', err);
+    }
+  }
+
+  injectCredentials(streamUrl) {
+    if (!streamUrl) return streamUrl;
+    if (!this.config.username || !this.config.password) return streamUrl;
+
+    try {
+      const parsed = new URL(streamUrl);
+      if (parsed.username || parsed.password) {
+        return parsed.toString();
+      }
+
+      parsed.username = this.config.username;
+      parsed.password = this.config.password;
+      return parsed.toString();
+    } catch (_err) {
+      return String(streamUrl).replace(
+        '://',
+        '://' + this.config.username + ':' + this.config.password + '@'
+      );
     }
   }
 
