@@ -228,6 +228,47 @@ class UnifiProvider extends EventEmitter {
     this.send(this.createResponse('EventSmartDetect', 0, payload));
   }
 
+  sendSmartDetectIdentityEvent(eventId, state, detection = {}) {
+    if (state !== 'start' && state !== 'stop') return;
+
+    const identityId =
+      typeof detection.identityId === 'string' && detection.identityId.trim().length > 0
+        ? detection.identityId.trim()
+        : null;
+    if (!identityId) return;
+
+    const uptimeMs = Math.floor(process.uptime() * 1000);
+    const wallMs = Date.now();
+    const payload = {
+      clockBestMonotonic: uptimeMs,
+      clockBestWall: wallMs,
+      clockMonotonic: uptimeMs,
+      clockStream: uptimeMs,
+      clockStreamRate: 1000,
+      clockWall: wallMs,
+      edgeType: state === 'start' ? 'enter' : 'leave',
+      eventId,
+      eventType: 'motion',
+      levels: { '0': state === 'start' ? 47 : 49 },
+      motionHeatmap: '',
+      motionSnapshot: '',
+      objectTypes: ['person'],
+      smartDetectSnapshot: '',
+      zonesStatus: { '0': 48 },
+      identityId
+    };
+
+    if (typeof detection.score === 'number' && Number.isFinite(detection.score)) {
+      payload.confidence = detection.score;
+    }
+
+    if (typeof detection.distance === 'number' && Number.isFinite(detection.distance)) {
+      payload.distance = detection.distance;
+    }
+
+    this.send(this.createResponse('EventSmartDetectIdentity', 0, payload));
+  }
+
   getVideoSettings() {
     return {
       audio: { bitRate: 32000, channels: 1, enabled: true, sampleRate: 11025, type: 'aac' },

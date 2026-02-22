@@ -192,8 +192,49 @@ class CameraProxy {
     }
 
     if (message.functionName === 'EventSmartDetectIdentity') {
+      const payload = message.payload && typeof message.payload === 'object'
+        ? message.payload
+        : null;
+
       if (this.config?.detection?.logDecisions) {
-        this.logger.debug('RTSP parity identity', message.payload || {});
+        this.logger.debug('RTSP parity identity', payload || {});
+      }
+
+      if (!payload) return;
+      if (!this.config?.detection?.emitSmartEvents) return;
+      if (!this.providers.unifi?.isConnected?.()) return;
+
+      const edgeType = payload.edgeType === 'enter'
+        ? 'start'
+        : payload.edgeType === 'leave'
+          ? 'stop'
+          : null;
+      if (!edgeType) return;
+
+      const identityId =
+        typeof payload.identityId === 'string' && payload.identityId.trim().length > 0
+          ? payload.identityId.trim()
+          : null;
+      if (!identityId) return;
+
+      const eventId =
+        typeof payload.eventId === 'string' || typeof payload.eventId === 'number'
+          ? payload.eventId
+          : `identity-${Date.now()}`;
+
+      const score = typeof payload.confidence === 'number' && Number.isFinite(payload.confidence)
+        ? payload.confidence
+        : null;
+      const distance = typeof payload.distance === 'number' && Number.isFinite(payload.distance)
+        ? payload.distance
+        : null;
+
+      if (typeof this.providers.unifi.sendSmartDetectIdentityEvent === 'function') {
+        this.providers.unifi.sendSmartDetectIdentityEvent(eventId, edgeType, {
+          identityId,
+          score,
+          distance
+        });
       }
       return;
     }
