@@ -9,6 +9,7 @@ config.json
 !.env.example
 .ruff_cache/
 __pycache__/
+.sisyphus/
 
 # Logs
 *.log
