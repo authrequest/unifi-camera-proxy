@@ -70,25 +70,56 @@ Set `detection.rtspParity.enabled=true` and `detection.rtspParity.rtspUrl` to en
 
 Use `detection.rtspParity.pythonPath = "python3"` for production/runtime by default.
 
+Set `detection.rtspParity.parityLogPath` (for example `analysis/harness/reports/semantic_validation/rtsp_parity_events.jsonl`) to persist parsed parity events as newline-delimited JSON for offline tuning.
+
 For SmartFace-assisted face events, use:
 
 - `detection.rtspParity.detectorBackend = "smartface_ncnn"`
-- `detection.rtspParity.smartfaceParam = "<path-to-SmartFace_extract_20220317.param>"`
-- `detection.rtspParity.smartfaceBin = "<path-to-SmartFace_extract_20220317.bin>"`
+- `detection.rtspParity.smartfaceParam = "<path-to-SmartFace_enroll_ssdlite_20220419.param>"`
+- `detection.rtspParity.smartfaceBin = "<path-to-SmartFace_enroll_ssdlite_20220419.bin>"`
+- Optional explicit identity model paths:
+  - `detection.rtspParity.smartfaceLmkParam`
+  - `detection.rtspParity.smartfaceLmkBin`
+  - `detection.rtspParity.smartfaceExtractParam`
+  - `detection.rtspParity.smartfaceExtractBin`
+- Optional persistent identity gallery settings:
+  - `detection.rtspParity.identityGalleryPath`
+  - `detection.rtspParity.identityGalleryMaxProfiles`
+  - `detection.rtspParity.identityGallerySaveIntervalFrames`
+  - `detection.rtspParity.identityGalleryMaxIdleMs`
+  - `detection.rtspParity.identityGalleryPruneIntervalFrames`
 
 The backend keeps person/vehicle inference and adds face detection with score gating and frame-stability filtering.
+When `smartface_ncnn` is used, the runner decodes face boxes from the enroll model stride heads (`classification_stride_*` + `regression_stride_*`) and applies NMS before score/stability gates.
+If `lmk` + `extract` models are available, the runner also emits `EventSmartDetectIdentity` with stable per-person IDs from embedding matching.
+If `identityGalleryPath` is set, those identity profiles are saved and reloaded so IDs survive process restarts.
+If `identityGalleryMaxIdleMs` is set, profiles that have not been seen for longer than that time are removed automatically.
 
 `ParityFrameSummary` now includes SmartFace tuning telemetry in `payload`:
 
 - `faceScoreTelemetry.summary`: `count`, `min`, `max`, `mean`, `p50`, `p90`
 - `faceScoreTelemetry.histogram`: fixed bins (`0.0-0.5`, `0.5-0.6`, `0.6-0.7`, `0.7-0.8`, `0.8-0.9`, `0.9-1.0`) and per-bin counts
-- `stableFaceCount` and `smartfaceStableFramesThreshold`
+- `faceCount` (accepted), `rawFaceCandidateCount` (pre-threshold), and `faceAcceptanceRate`
+- `stableFaceCount`, `smartfaceMinScoreThreshold`, and `smartfaceStableFramesThreshold`
+- `identityIds`, `identityCount`, `identityCandidateCount`, and `identityProfileCount`
+- `identityDistanceThreshold` and `identityStableFramesThreshold`
 
 Suggested tuning loop:
 
+- If `rawFaceCandidateCount > 0` frequently but `faceAcceptanceRate` is low, lower `smartfaceMinScore` gradually.
 - If `faceCount > 0` frequently but `stableFaceCount` is often `0`, reduce `smartfaceStableFrames`.
-- If `p90` stays below `smartfaceMinScore` on valid scenes, lower `smartfaceMinScore` gradually.
+- If `p90` sits close to `smartfaceMinScoreThreshold` on valid scenes, lower `smartfaceMinScore` in small steps.
 - Keep changes small and re-check histogram/percentile movement over representative day/night clips.
+
+Offline recommendation helper:
+
+```bash
+analysis/harness/.venv-loader-probe/bin/python bin/rtsp-face-tuning-recommender.py \
+  --input-jsonl <parity-events.jsonl> \
+  --output analysis/harness/reports/semantic_validation/rtsp_face_tuning_recommendation.json
+```
+
+The JSONL input should contain one event per line and include `ParityFrameSummary` payload entries. The report emits recommended `smartfaceMinScore` and `smartfaceStableFrames` values with action labels (`increase`/`decrease`/`keep`) and rationale.
 
 ## Runtime vs Research Files
 

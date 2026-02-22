@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const readline = require('readline');
 
@@ -9,6 +10,8 @@ class RtspParityBridge {
     this.proc = null;
     this.stdoutInterface = null;
     this.stderrInterface = null;
+    this.parityLogPath = null;
+    this.parityLogStream = null;
   }
 
   buildCommand() {
@@ -80,6 +83,22 @@ class RtspParityBridge {
       args.push('--smartface-bin', this.config.smartfaceBin);
     }
 
+    if (typeof this.config.smartfaceLmkParam === 'string' && this.config.smartfaceLmkParam) {
+      args.push('--smartface-lmk-param', this.config.smartfaceLmkParam);
+    }
+
+    if (typeof this.config.smartfaceLmkBin === 'string' && this.config.smartfaceLmkBin) {
+      args.push('--smartface-lmk-bin', this.config.smartfaceLmkBin);
+    }
+
+    if (typeof this.config.smartfaceExtractParam === 'string' && this.config.smartfaceExtractParam) {
+      args.push('--smartface-extract-param', this.config.smartfaceExtractParam);
+    }
+
+    if (typeof this.config.smartfaceExtractBin === 'string' && this.config.smartfaceExtractBin) {
+      args.push('--smartface-extract-bin', this.config.smartfaceExtractBin);
+    }
+
     if (typeof this.config.smartfaceInputSize === 'number' && this.config.smartfaceInputSize > 0) {
       args.push('--smartface-input-size', String(this.config.smartfaceInputSize));
     }
@@ -100,6 +119,76 @@ class RtspParityBridge {
       args.push('--smartface-stable-frames', String(this.config.smartfaceStableFrames));
     }
 
+    if (
+      typeof this.config.smartfaceIdentityDistanceThreshold === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityDistanceThreshold) &&
+      this.config.smartfaceIdentityDistanceThreshold >= 0
+    ) {
+      args.push(
+        '--smartface-identity-distance-threshold',
+        String(this.config.smartfaceIdentityDistanceThreshold)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityStableFrames === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityStableFrames) &&
+      this.config.smartfaceIdentityStableFrames > 0
+    ) {
+      args.push(
+        '--smartface-identity-stable-frames',
+        String(this.config.smartfaceIdentityStableFrames)
+      );
+    }
+
+    if (typeof this.config.identityGalleryPath === 'string' && this.config.identityGalleryPath) {
+      args.push('--identity-gallery-path', this.config.identityGalleryPath);
+    }
+
+    if (
+      typeof this.config.identityGalleryMaxProfiles === 'number' &&
+      Number.isFinite(this.config.identityGalleryMaxProfiles) &&
+      this.config.identityGalleryMaxProfiles > 0
+    ) {
+      args.push(
+        '--identity-gallery-max-profiles',
+        String(this.config.identityGalleryMaxProfiles)
+      );
+    }
+
+    if (
+      typeof this.config.identityGallerySaveIntervalFrames === 'number' &&
+      Number.isFinite(this.config.identityGallerySaveIntervalFrames) &&
+      this.config.identityGallerySaveIntervalFrames > 0
+    ) {
+      args.push(
+        '--identity-gallery-save-interval-frames',
+        String(this.config.identityGallerySaveIntervalFrames)
+      );
+    }
+
+    if (
+      typeof this.config.identityGalleryMaxIdleMs === 'number' &&
+      Number.isFinite(this.config.identityGalleryMaxIdleMs) &&
+      this.config.identityGalleryMaxIdleMs >= 0
+    ) {
+      args.push(
+        '--identity-gallery-max-idle-ms',
+        String(this.config.identityGalleryMaxIdleMs)
+      );
+    }
+
+    if (
+      typeof this.config.identityGalleryPruneIntervalFrames === 'number' &&
+      Number.isFinite(this.config.identityGalleryPruneIntervalFrames) &&
+      this.config.identityGalleryPruneIntervalFrames > 0
+    ) {
+      args.push(
+        '--identity-gallery-prune-interval-frames',
+        String(this.config.identityGalleryPruneIntervalFrames)
+      );
+    }
+
     return { pythonPath, args };
   }
 
@@ -113,6 +202,8 @@ class RtspParityBridge {
     }
 
     if (this.proc) return;
+
+    this.openParityLogStream();
 
     const { pythonPath, args } = this.buildCommand();
     this.proc = spawn(pythonPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -142,8 +233,68 @@ class RtspParityBridge {
 
     this.logger.info('RTSP parity process started', {
       pythonPath,
-      scriptPath: args[0]
+      scriptPath: args[0],
+      parityLogPath: this.parityLogPath
     });
+  }
+
+  openParityLogStream() {
+    const configuredPath =
+      typeof this.config.parityLogPath === 'string'
+        ? this.config.parityLogPath.trim()
+        : '';
+    if (!configuredPath) return;
+
+    const resolvedPath = path.isAbsolute(configuredPath)
+      ? configuredPath
+      : path.resolve(process.cwd(), configuredPath);
+
+    try {
+      fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+      this.parityLogStream = fs.createWriteStream(resolvedPath, { flags: 'a' });
+      this.parityLogPath = resolvedPath;
+
+      this.parityLogStream.on('error', (err) => {
+        this.logger.warn('RTSP parity log stream error', {
+          parityLogPath: resolvedPath,
+          error: err?.message || String(err)
+        });
+      });
+    } catch (err) {
+      this.parityLogPath = null;
+      this.parityLogStream = null;
+      this.logger.warn('Unable to open RTSP parity log file', {
+        parityLogPath: resolvedPath,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  appendParityLogEntry(message) {
+    if (!this.parityLogStream || !message || typeof message !== 'object') return;
+
+    try {
+      const line = JSON.stringify(message);
+      this.parityLogStream.write(`${line}\n`);
+    } catch (err) {
+      this.logger.warn('Failed to append RTSP parity log entry', {
+        parityLogPath: this.parityLogPath,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
+  closeParityLogStream() {
+    if (!this.parityLogStream) {
+      this.parityLogPath = null;
+      return;
+    }
+
+    const stream = this.parityLogStream;
+    this.parityLogStream = null;
+    this.parityLogPath = null;
+    stream.removeAllListeners('error');
+    stream.end();
   }
 
   handleStdoutLine(line, onMessage) {
@@ -152,6 +303,7 @@ class RtspParityBridge {
 
     try {
       const parsed = JSON.parse(text);
+      this.appendParityLogEntry(parsed);
       onMessage(parsed);
     } catch (_err) {
       this.logger.debug('RTSP parity non-json output', { line: text });
@@ -178,6 +330,8 @@ class RtspParityBridge {
       }
       this.proc = null;
     }
+
+    this.closeParityLogStream();
   }
 
   cleanup() {
@@ -194,6 +348,7 @@ class RtspParityBridge {
     }
 
     this.proc = null;
+    this.closeParityLogStream();
   }
 }
 

@@ -191,6 +191,13 @@ class CameraProxy {
       return;
     }
 
+    if (message.functionName === 'EventSmartDetectIdentity') {
+      if (this.config?.detection?.logDecisions) {
+        this.logger.debug('RTSP parity identity', message.payload || {});
+      }
+      return;
+    }
+
     if (message.functionName !== 'EventSmartDetect') return;
 
     const payload = message.payload && typeof message.payload === 'object'
