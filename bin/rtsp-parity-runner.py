@@ -58,6 +58,152 @@ DEFAULT_IDENTITY_SPLIT_GUARD_RATIO = 0.9
 DEFAULT_IDENTITY_SPLIT_GUARD_MAX_SEEN = 3
 DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD = 0.45
 DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN = 5
+DEFAULT_IDENTITY_QUALITY_VERIFIER_ENABLED = True
+DEFAULT_IDENTITY_POSE_MASK_GATE_ENABLED = False
+DEFAULT_IDENTITY_MAX_ABS_YAW_DEG = 45.0
+DEFAULT_IDENTITY_MAX_ABS_PITCH_DEG = 35.0
+DEFAULT_IDENTITY_MAX_ABS_ROLL_DEG = 30.0
+DEFAULT_IDENTITY_MASK_CONFIDENCE_MIN = 0.5
+IDENTITY_AUDIT_DECISIONS = (
+    "strict_match",
+    "merge_recover",
+    "new_identity_split_guard",
+    "new_identity_reserved",
+    "new_identity_threshold",
+    "new_identity_no_profiles",
+    "new_identity_invalid_embedding",
+    "unknown",
+)
+IDENTITY_QUALITY_REASONS = (
+    "quality_ok",
+    "quality_ok_telemetry_only",
+    "quality_verifier_disabled",
+    "pose_unavailable",
+    "mask_unavailable",
+    "pose_out_of_range",
+    "mask_confidence_low",
+    "unknown",
+)
+
+
+def new_identity_decision_counters() -> dict[str, int]:
+    return {str(code): 0 for code in IDENTITY_AUDIT_DECISIONS}
+
+
+def bump_identity_decision_counter(
+    counters: dict[str, int],
+    decision: str | None,
+) -> None:
+    code = (
+        str(decision)
+        if isinstance(decision, str) and decision in counters
+        else "unknown"
+    )
+    counters[code] = int(counters.get(code, 0)) + 1
+
+
+def new_identity_quality_counters() -> dict[str, int]:
+    return {str(code): 0 for code in IDENTITY_QUALITY_REASONS}
+
+
+def bump_identity_quality_counter(
+    counters: dict[str, int],
+    reason: str | None,
+) -> str:
+    code = str(reason) if isinstance(reason, str) and reason in counters else "unknown"
+    counters[code] = int(counters.get(code, 0)) + 1
+    return code
+
+
+def _coerce_pose_angles(value: Any) -> tuple[float, float, float] | None:
+    if isinstance(value, tuple) and len(value) == 3:
+        if all(
+            isinstance(component, (int, float)) and math.isfinite(float(component))
+            for component in value
+        ):
+            return (float(value[0]), float(value[1]), float(value[2]))
+        return None
+    if isinstance(value, list) and len(value) == 3:
+        if all(
+            isinstance(component, (int, float)) and math.isfinite(float(component))
+            for component in value
+        ):
+            return (float(value[0]), float(value[1]), float(value[2]))
+        return None
+    if isinstance(value, dict):
+        yaw = value.get("yaw")
+        pitch = value.get("pitch")
+        roll = value.get("roll")
+        if (
+            isinstance(yaw, (int, float))
+            and math.isfinite(float(yaw))
+            and isinstance(pitch, (int, float))
+            and math.isfinite(float(pitch))
+            and isinstance(roll, (int, float))
+            and math.isfinite(float(roll))
+        ):
+            return (float(yaw), float(pitch), float(roll))
+    return None
+
+
+def _coerce_mask_confidence(face_detection: dict[str, Any]) -> float | None:
+    value = face_detection.get("maskConfidence")
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def apply_pose_mask_quality_verifier(
+    face_detection: dict[str, Any],
+    verifier_enabled: bool,
+    hard_gate_enabled: bool,
+    max_abs_yaw: float,
+    max_abs_pitch: float,
+    max_abs_roll: float,
+    mask_confidence_min: float,
+    quality_stats_frame: dict[str, int],
+    quality_stats_cumulative: dict[str, int],
+    identity_reject_reasons: dict[str, int],
+) -> tuple[bool, str, dict[str, Any]]:
+    accepted, reason, details = evaluate_pose_mask_quality(
+        pose_angles=_coerce_pose_angles(face_detection.get("poseAngles")),
+        mask_confidence=_coerce_mask_confidence(face_detection),
+        verifier_enabled=bool(verifier_enabled),
+        hard_gate_enabled=bool(hard_gate_enabled),
+        max_abs_yaw=float(max_abs_yaw),
+        max_abs_pitch=float(max_abs_pitch),
+        max_abs_roll=float(max_abs_roll),
+        mask_confidence_min=float(mask_confidence_min),
+    )
+    reason_code = bump_identity_quality_counter(quality_stats_frame, reason)
+    bump_identity_quality_counter(quality_stats_cumulative, reason)
+    if not accepted:
+        identity_reject_reasons[reason_code] = (
+            int(identity_reject_reasons.get(reason_code, 0)) + 1
+        )
+    return accepted, reason_code, details
+
+
+def build_identity_quality_summary_payload(
+    verifier_enabled: bool,
+    hard_gate_enabled: bool,
+    quality_stats_frame: dict[str, int],
+    quality_stats_cumulative: dict[str, int],
+    max_abs_yaw: float,
+    max_abs_pitch: float,
+    max_abs_roll: float,
+    mask_confidence_min: float,
+) -> dict[str, Any]:
+    return {
+        "identityQualityVerifierEnabled": bool(verifier_enabled),
+        "identityPoseMaskGateEnabled": bool(hard_gate_enabled),
+        "identityQualityStatsFrame": dict(quality_stats_frame),
+        "identityQualityStatsCumulative": dict(quality_stats_cumulative),
+        "identityMaxAbsYawDeg": float(max_abs_yaw),
+        "identityMaxAbsPitchDeg": float(max_abs_pitch),
+        "identityMaxAbsRollDeg": float(max_abs_roll),
+        "identityMaskConfidenceMin": float(mask_confidence_min),
+    }
 
 
 def rect_iou(a: Box, b: Box) -> float:
@@ -333,8 +479,11 @@ def match_embedding_identity(
     merge_recover_threshold: float | None = DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
     merge_recover_min_seen: int = DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
     reserved_identity_ids: set[str] | None = None,
+    verified_allowlist_mode: bool = False,
+    audit: dict[str, Any] | None = None,
 ) -> tuple[str, float | None, bool]:
     normalized_embedding = normalize_embedding_vector(embedding)
+    embedding_is_normalized = normalized_embedding is not None
     if normalized_embedding is None:
         normalized_embedding = [
             float(value)
@@ -380,11 +529,63 @@ def match_embedding_identity(
     merge_seen_min = max(1, int(merge_recover_min_seen))
     reserved = set(reserved_identity_ids or set())
 
+    policy = _normalize_uiface_policy(identity_state.get("uifacePolicy"))
+    policy_instance_to_subject = _as_string_map(policy.get("instanceToSubjectIdMap"))
+    policy_relation_map = _as_relation_map(policy.get("enrolledSubjectRelationMap"))
+    policy_ignored_subjects = _expand_ignored_subjects(
+        _as_string_set(policy.get("ignoredSubjectIds")),
+        policy_relation_map,
+    )
+    policy_ignored_instances = _as_string_set(policy.get("ignoredInstanceIds"))
+    policy_verified_unique_ids = _as_string_set(policy.get("verifiedUniqueIds"))
+    enforce_verified_allowlist = bool(verified_allowlist_mode) and bool(
+        policy_verified_unique_ids
+    )
+
+    split_guard_triggered = False
+    reserved_blocked = False
+
+    def _write_audit(
+        decision: str,
+        *,
+        matched_identity_id: str | None,
+        distance: float | None,
+    ) -> None:
+        if not isinstance(audit, dict):
+            return
+        audit["decision"] = str(decision)
+        audit["matchedIdentityId"] = (
+            str(matched_identity_id) if isinstance(matched_identity_id, str) else None
+        )
+        audit["distance"] = (
+            float(distance)
+            if isinstance(distance, (int, float)) and math.isfinite(float(distance))
+            else None
+        )
+        audit["distanceThreshold"] = float(threshold)
+        audit["mergeRecoverThreshold"] = float(merge_threshold)
+
     chosen: tuple[str, float, int, dict[str, Any]] | None = None
+    chosen_reason = "strict_match"
     for identity_id, candidate_distance, candidate_seen, profile in candidates:
         if candidate_distance > threshold:
             break
+        if enforce_verified_allowlist and identity_id not in policy_verified_unique_ids:
+            reserved_blocked = True
+            continue
+        candidate_subject_id = policy_instance_to_subject.get(identity_id)
+        if identity_id in policy_ignored_instances:
+            reserved_blocked = True
+            continue
+        if (
+            isinstance(candidate_subject_id, str)
+            and candidate_subject_id
+            and candidate_subject_id in policy_ignored_subjects
+        ):
+            reserved_blocked = True
+            continue
         if identity_id in reserved:
+            reserved_blocked = True
             continue
         split_guard_floor = threshold * split_ratio
         if (
@@ -392,19 +593,40 @@ def match_embedding_identity(
             and candidate_seen <= split_seen_limit
             and candidate_distance > split_guard_floor
         ):
+            split_guard_triggered = True
             continue
         chosen = (identity_id, candidate_distance, candidate_seen, profile)
+        chosen_reason = "strict_match"
         break
 
     if chosen is None and merge_threshold > threshold:
         for identity_id, candidate_distance, candidate_seen, profile in candidates:
             if candidate_distance > merge_threshold:
                 break
+            if (
+                enforce_verified_allowlist
+                and identity_id not in policy_verified_unique_ids
+            ):
+                reserved_blocked = True
+                continue
+            candidate_subject_id = policy_instance_to_subject.get(identity_id)
+            if identity_id in policy_ignored_instances:
+                reserved_blocked = True
+                continue
+            if (
+                isinstance(candidate_subject_id, str)
+                and candidate_subject_id
+                and candidate_subject_id in policy_ignored_subjects
+            ):
+                reserved_blocked = True
+                continue
             if identity_id in reserved:
+                reserved_blocked = True
                 continue
             if candidate_seen < merge_seen_min:
                 continue
             chosen = (identity_id, candidate_distance, candidate_seen, profile)
+            chosen_reason = "merge_recover"
             break
 
     if chosen is not None:
@@ -433,10 +655,26 @@ def match_embedding_identity(
             ),
         }
         identity_state["profiles"] = profiles
+        _write_audit(
+            chosen_reason,
+            matched_identity_id=best_id,
+            distance=float(best_distance),
+        )
         return best_id, float(best_distance), False
 
     next_id = int(identity_state.get("next_id", 1))
-    new_identity = f"person-{next_id}"
+    if next_id < 1:
+        next_id = 1
+    while True:
+        candidate_identity = f"person-{next_id}"
+        if (
+            candidate_identity not in profiles
+            and candidate_identity not in policy_ignored_instances
+        ):
+            new_identity = candidate_identity
+            break
+        next_id += 1
+
     profiles[new_identity] = {
         "embedding": list(normalized_embedding),
         "seen": 1,
@@ -444,6 +682,27 @@ def match_embedding_identity(
     }
     identity_state["profiles"] = profiles
     identity_state["next_id"] = next_id + 1
+
+    if reserved_blocked:
+        new_reason = "new_identity_reserved"
+    elif split_guard_triggered:
+        new_reason = "new_identity_split_guard"
+    elif not candidates:
+        new_reason = (
+            "new_identity_no_profiles"
+            if embedding_is_normalized
+            else "new_identity_invalid_embedding"
+        )
+    elif not embedding_is_normalized:
+        new_reason = "new_identity_invalid_embedding"
+    else:
+        new_reason = "new_identity_threshold"
+
+    _write_audit(
+        new_reason,
+        matched_identity_id=None,
+        distance=None,
+    )
     return new_identity, None, True
 
 
@@ -459,6 +718,118 @@ def _identity_numeric_suffix(identity_id: str) -> int | None:
     if not suffix.isdigit():
         return None
     return int(suffix)
+
+
+def _as_string_set(values: Any) -> set[str]:
+    if not isinstance(values, list):
+        return set()
+    return {str(value) for value in values if isinstance(value, str) and value}
+
+
+def _as_string_map(values: Any) -> dict[str, str]:
+    if not isinstance(values, dict):
+        return {}
+    mapped: dict[str, str] = {}
+    for key, value in values.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if not key or not value:
+            continue
+        mapped[str(key)] = str(value)
+    return mapped
+
+
+def _as_relation_map(values: Any) -> dict[str, list[str]]:
+    if not isinstance(values, dict):
+        return {}
+    relation_map: dict[str, list[str]] = {}
+    for key, raw_links in values.items():
+        if not isinstance(key, str) or not key:
+            continue
+        links: list[str] = []
+        if isinstance(raw_links, list):
+            for item in raw_links:
+                if isinstance(item, str) and item:
+                    links.append(str(item))
+        relation_map[str(key)] = sorted(set(links))
+    return relation_map
+
+
+def _normalize_uiface_policy(policy_raw: Any) -> dict[str, Any]:
+    if not isinstance(policy_raw, dict):
+        return {
+            "instanceToSubjectIdMap": {},
+            "enrolledSubjectRelationMap": {},
+            "ignoredSubjectIds": [],
+            "ignoredInstanceIds": [],
+            "verifiedUniqueIds": [],
+        }
+
+    return {
+        "instanceToSubjectIdMap": _as_string_map(
+            policy_raw.get("instanceToSubjectIdMap")
+        ),
+        "enrolledSubjectRelationMap": _as_relation_map(
+            policy_raw.get("enrolledSubjectRelationMap")
+        ),
+        "ignoredSubjectIds": sorted(
+            _as_string_set(policy_raw.get("ignoredSubjectIds"))
+        ),
+        "ignoredInstanceIds": sorted(
+            _as_string_set(policy_raw.get("ignoredInstanceIds"))
+        ),
+        "verifiedUniqueIds": sorted(
+            _as_string_set(policy_raw.get("verifiedUniqueIds"))
+        ),
+    }
+
+
+def _extract_uiface_policy_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_uiface_policy(
+        {
+            "instanceToSubjectIdMap": payload.get("InstanceIdToSubjectIdMap"),
+            "enrolledSubjectRelationMap": payload.get("EnrolledSubjectRelationMap"),
+            "ignoredSubjectIds": payload.get("IgnoredSubjectIds"),
+            "ignoredInstanceIds": payload.get("IngnoredInstanceIds"),
+            "verifiedUniqueIds": payload.get("VerifiedUniqueIds"),
+        }
+    )
+
+
+def _uiface_policy_has_entries(policy: dict[str, Any]) -> bool:
+    return bool(
+        policy.get("instanceToSubjectIdMap")
+        or policy.get("enrolledSubjectRelationMap")
+        or policy.get("ignoredSubjectIds")
+        or policy.get("ignoredInstanceIds")
+        or policy.get("verifiedUniqueIds")
+    )
+
+
+def _expand_ignored_subjects(
+    ignored_subject_ids: set[str],
+    relation_map: dict[str, list[str]],
+) -> set[str]:
+    if not ignored_subject_ids or not relation_map:
+        return set(ignored_subject_ids)
+
+    expanded = set(ignored_subject_ids)
+    changed = True
+    while changed:
+        changed = False
+        for subject_id, related_ids in relation_map.items():
+            related = {
+                str(value) for value in related_ids if isinstance(value, str) and value
+            }
+            if not related:
+                continue
+            if subject_id in expanded or bool(expanded.intersection(related)):
+                before = len(expanded)
+                expanded.add(subject_id)
+                expanded.update(related)
+                if len(expanded) != before:
+                    changed = True
+    return expanded
 
 
 def _sanitize_identity_state(
@@ -530,6 +901,77 @@ def _sanitize_identity_state(
     return {"next_id": next_id, "profiles": profiles}
 
 
+def _build_uiface_identity_indexes(state: dict[str, Any]) -> dict[str, Any]:
+    profiles = state.get("profiles")
+    if not isinstance(profiles, dict):
+        return {
+            "EnrolledSubjectIds": [],
+            "EnrolledSubjectRelationMap": {},
+            "IgnoredSubjectIds": [],
+            "IngnoredInstanceIds": [],
+            "InstanceIdToNameMap": {},
+            "InstanceIdToSubjectIdMap": {},
+            "InstanceIdToUniqueIdMap": {},
+            "SubjectIdToNameMap": {},
+            "VerifiedUniqueIds": [],
+        }
+
+    policy = _normalize_uiface_policy(state.get("uifacePolicy"))
+
+    instance_to_name: dict[str, str] = {}
+    instance_to_subject: dict[str, str] = {}
+    instance_to_unique: dict[str, str] = {}
+    subject_to_name: dict[str, str] = {}
+    enrolled_subject_ids: list[str] = []
+    verified_unique_ids: list[str] = []
+
+    for identity_id in sorted(str(key) for key in profiles.keys()):
+        subject_id = f"subject-{identity_id}"
+        unique_id = identity_id
+        display_name = identity_id
+        instance_to_name[identity_id] = display_name
+        instance_to_subject[identity_id] = subject_id
+        instance_to_unique[identity_id] = unique_id
+        subject_to_name[subject_id] = display_name
+        enrolled_subject_ids.append(subject_id)
+        verified_unique_ids.append(unique_id)
+
+    policy_relation_map = _as_relation_map(policy.get("enrolledSubjectRelationMap"))
+    ignored_subject_ids = sorted(_as_string_set(policy.get("ignoredSubjectIds")))
+    ignored_instance_ids = sorted(_as_string_set(policy.get("ignoredInstanceIds")))
+    verified_from_policy = _as_string_set(policy.get("verifiedUniqueIds"))
+    if verified_from_policy:
+        verified_unique_ids = sorted(verified_from_policy)
+
+    return {
+        "EnrolledSubjectIds": enrolled_subject_ids,
+        "EnrolledSubjectRelationMap": policy_relation_map,
+        "IgnoredSubjectIds": ignored_subject_ids,
+        "IngnoredInstanceIds": ignored_instance_ids,
+        "InstanceIdToNameMap": instance_to_name,
+        "InstanceIdToSubjectIdMap": instance_to_subject,
+        "InstanceIdToUniqueIdMap": instance_to_unique,
+        "SubjectIdToNameMap": subject_to_name,
+        "VerifiedUniqueIds": verified_unique_ids,
+    }
+
+
+def _infer_next_id_from_uiface_payload(payload: dict[str, Any]) -> int:
+    instance_to_unique = payload.get("InstanceIdToUniqueIdMap")
+    if not isinstance(instance_to_unique, dict):
+        return 1
+
+    max_suffix = 0
+    for value in instance_to_unique.values():
+        if not isinstance(value, str):
+            continue
+        suffix = _identity_numeric_suffix(value)
+        if suffix is not None and suffix > max_suffix:
+            max_suffix = suffix
+
+    return max(1, max_suffix + 1)
+
+
 def load_identity_gallery(
     gallery_path: str | None,
     max_profiles: int = DEFAULT_IDENTITY_GALLERY_MAX_PROFILES,
@@ -550,7 +992,26 @@ def load_identity_gallery(
         return _empty_identity_state()
 
     if "profiles" in payload and "next_id" in payload:
-        return _sanitize_identity_state(payload, max_profiles=max_profiles)
+        state = _sanitize_identity_state(payload, max_profiles=max_profiles)
+        policy = _extract_uiface_policy_from_payload(payload)
+        if _uiface_policy_has_entries(policy):
+            state["uifacePolicy"] = policy
+        return state
+
+    if "profiles" not in payload and isinstance(
+        payload.get("InstanceIdToUniqueIdMap"), dict
+    ):
+        state = _sanitize_identity_state(
+            {
+                "next_id": _infer_next_id_from_uiface_payload(payload),
+                "profiles": [],
+            },
+            max_profiles=max_profiles,
+        )
+        policy = _extract_uiface_policy_from_payload(payload)
+        if _uiface_policy_has_entries(policy):
+            state["uifacePolicy"] = policy
+        return state
 
     next_id = payload.get("nextId", 1)
     profiles_list = payload.get("profiles", [])
@@ -558,7 +1019,11 @@ def load_identity_gallery(
         "next_id": int(next_id) if isinstance(next_id, int) else 1,
         "profiles": profiles_list,
     }
-    return _sanitize_identity_state(transformed, max_profiles=max_profiles)
+    state = _sanitize_identity_state(transformed, max_profiles=max_profiles)
+    policy = _extract_uiface_policy_from_payload(payload)
+    if _uiface_policy_has_entries(policy):
+        state["uifacePolicy"] = policy
+    return state
 
 
 def save_identity_gallery(
@@ -571,6 +1036,9 @@ def save_identity_gallery(
 
     path = Path(str(gallery_path)).resolve()
     state = _sanitize_identity_state(identity_state, max_profiles=max_profiles)
+    policy = _normalize_uiface_policy(identity_state.get("uifacePolicy"))
+    if _uiface_policy_has_entries(policy):
+        state["uifacePolicy"] = policy
 
     profiles_payload: list[dict[str, Any]] = []
     for identity_id, profile in state.get("profiles", {}).items():
@@ -603,6 +1071,7 @@ def save_identity_gallery(
         "nextId": int(state.get("next_id", 1)),
         "profiles": profiles_payload,
     }
+    payload.update(_build_uiface_identity_indexes(state))
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -650,6 +1119,78 @@ def prune_identity_gallery(
 
     identity_state["profiles"] = profiles_raw
     return removed_ids
+
+
+def evaluate_pose_mask_quality(
+    pose_angles: tuple[float, float, float] | None,
+    mask_confidence: float | None,
+    verifier_enabled: bool,
+    hard_gate_enabled: bool,
+    max_abs_yaw: float,
+    max_abs_pitch: float,
+    max_abs_roll: float,
+    mask_confidence_min: float,
+) -> tuple[bool, str, dict[str, Any]]:
+    pose_available = False
+    yaw = 0.0
+    pitch = 0.0
+    roll = 0.0
+    if (
+        isinstance(pose_angles, tuple)
+        and len(pose_angles) == 3
+        and all(
+            isinstance(value, (int, float)) and math.isfinite(float(value))
+            for value in pose_angles
+        )
+    ):
+        pose_available = True
+        yaw = float(pose_angles[0])
+        pitch = float(pose_angles[1])
+        roll = float(pose_angles[2])
+
+    mask_available = isinstance(mask_confidence, (int, float)) and math.isfinite(
+        float(mask_confidence)
+    )
+    mask_value = 0.0
+    if mask_available and isinstance(mask_confidence, (int, float)):
+        mask_value = float(mask_confidence)
+    pose_out_of_range = pose_available and (
+        abs(yaw) > float(max_abs_yaw)
+        or abs(pitch) > float(max_abs_pitch)
+        or abs(roll) > float(max_abs_roll)
+    )
+    mask_low_confidence = mask_available and (mask_value < float(mask_confidence_min))
+
+    details = {
+        "poseUnavailable": not pose_available,
+        "maskUnavailable": not mask_available,
+        "poseOutOfRange": pose_out_of_range,
+        "maskLowConfidence": mask_low_confidence,
+        "yaw": yaw,
+        "pitch": pitch,
+        "roll": roll,
+        "maskConfidence": mask_value,
+    }
+
+    if not verifier_enabled:
+        return True, "quality_verifier_disabled", details
+
+    if not pose_available:
+        return (not hard_gate_enabled), "pose_unavailable", details
+
+    if not mask_available:
+        return (not hard_gate_enabled), "mask_unavailable", details
+
+    if hard_gate_enabled:
+        if pose_out_of_range:
+            return False, "pose_out_of_range", details
+        if mask_low_confidence:
+            return False, "mask_confidence_low", details
+        return True, "quality_ok", details
+
+    if pose_out_of_range or mask_low_confidence:
+        return True, "quality_ok_telemetry_only", details
+    return True, "quality_ok", details
 
 
 def evaluate_identity_candidate_quality(
@@ -759,6 +1300,7 @@ def create_detector(
     smartface_identity_merge_recover_threshold: float = DEFAULT_IDENTITY_MERGE_RECOVER_THRESHOLD,
     smartface_identity_merge_recover_min_seen: int = DEFAULT_IDENTITY_MERGE_RECOVER_MIN_SEEN,
     smartface_identity_prevent_duplicate_per_frame: bool = True,
+    smartface_identity_verified_allowlist_mode: bool = False,
 ) -> dict[str, Any]:
     normalized = str(backend or "heuristic").strip().lower()
     if normalized == "heuristic":
@@ -956,6 +1498,9 @@ def create_detector(
             ),
             "identity_prevent_duplicate_per_frame": bool(
                 smartface_identity_prevent_duplicate_per_frame
+            ),
+            "identity_verified_allowlist_mode": bool(
+                smartface_identity_verified_allowlist_mode
             ),
             "lmk_model": lmk_state,
             "extract_model": extract_state,
@@ -1912,6 +2457,96 @@ def run_parity(config: dict[str, Any]) -> int:
         smartface_identity_prevent_duplicate_per_frame = bool(
             smartface_identity_prevent_duplicate_per_frame_raw
         )
+    smartface_identity_verified_allowlist_mode_raw = config.get(
+        "smartface_identity_verified_allowlist_mode",
+        False,
+    )
+    if isinstance(smartface_identity_verified_allowlist_mode_raw, bool):
+        smartface_identity_verified_allowlist_mode = (
+            smartface_identity_verified_allowlist_mode_raw
+        )
+    elif isinstance(smartface_identity_verified_allowlist_mode_raw, str):
+        smartface_identity_verified_allowlist_mode = (
+            smartface_identity_verified_allowlist_mode_raw.strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+    else:
+        smartface_identity_verified_allowlist_mode = bool(
+            smartface_identity_verified_allowlist_mode_raw
+        )
+    smartface_identity_quality_verifier_enabled_raw = config.get(
+        "smartface_identity_quality_verifier_enabled",
+        DEFAULT_IDENTITY_QUALITY_VERIFIER_ENABLED,
+    )
+    if isinstance(smartface_identity_quality_verifier_enabled_raw, bool):
+        smartface_identity_quality_verifier_enabled = (
+            smartface_identity_quality_verifier_enabled_raw
+        )
+    elif isinstance(smartface_identity_quality_verifier_enabled_raw, str):
+        smartface_identity_quality_verifier_enabled = (
+            smartface_identity_quality_verifier_enabled_raw.strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+    else:
+        smartface_identity_quality_verifier_enabled = bool(
+            smartface_identity_quality_verifier_enabled_raw
+        )
+    smartface_identity_pose_mask_gate_enabled_raw = config.get(
+        "smartface_identity_pose_mask_gate_enabled",
+        DEFAULT_IDENTITY_POSE_MASK_GATE_ENABLED,
+    )
+    if isinstance(smartface_identity_pose_mask_gate_enabled_raw, bool):
+        smartface_identity_pose_mask_gate_enabled = (
+            smartface_identity_pose_mask_gate_enabled_raw
+        )
+    elif isinstance(smartface_identity_pose_mask_gate_enabled_raw, str):
+        smartface_identity_pose_mask_gate_enabled = (
+            smartface_identity_pose_mask_gate_enabled_raw.strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+    else:
+        smartface_identity_pose_mask_gate_enabled = bool(
+            smartface_identity_pose_mask_gate_enabled_raw
+        )
+    smartface_identity_max_abs_yaw_deg = max(
+        0.0,
+        float(
+            config.get(
+                "smartface_identity_max_abs_yaw_deg",
+                DEFAULT_IDENTITY_MAX_ABS_YAW_DEG,
+            )
+        ),
+    )
+    smartface_identity_max_abs_pitch_deg = max(
+        0.0,
+        float(
+            config.get(
+                "smartface_identity_max_abs_pitch_deg",
+                DEFAULT_IDENTITY_MAX_ABS_PITCH_DEG,
+            )
+        ),
+    )
+    smartface_identity_max_abs_roll_deg = max(
+        0.0,
+        float(
+            config.get(
+                "smartface_identity_max_abs_roll_deg",
+                DEFAULT_IDENTITY_MAX_ABS_ROLL_DEG,
+            )
+        ),
+    )
+    smartface_identity_mask_confidence_min = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                config.get(
+                    "smartface_identity_mask_confidence_min",
+                    DEFAULT_IDENTITY_MASK_CONFIDENCE_MIN,
+                )
+            ),
+        ),
+    )
     identity_gallery_path = config.get("identity_gallery_path")
     identity_gallery_max_profiles = max(
         1,
@@ -1982,6 +2617,7 @@ def run_parity(config: dict[str, Any]) -> int:
         smartface_identity_merge_recover_threshold=smartface_identity_merge_recover_threshold,
         smartface_identity_merge_recover_min_seen=smartface_identity_merge_recover_min_seen,
         smartface_identity_prevent_duplicate_per_frame=smartface_identity_prevent_duplicate_per_frame,
+        smartface_identity_verified_allowlist_mode=smartface_identity_verified_allowlist_mode,
     )
 
     emit_json(
@@ -2009,6 +2645,8 @@ def run_parity(config: dict[str, Any]) -> int:
         max_profiles=identity_gallery_max_profiles,
     )
     identity_state_dirty = False
+    identity_decision_cumulative = new_identity_decision_counters()
+    identity_quality_stats_cumulative = new_identity_quality_counters()
 
     try:
         idx = 0
@@ -2044,6 +2682,8 @@ def run_parity(config: dict[str, Any]) -> int:
             identity_require_landmarks: bool | None = None
             identity_rejected_count = 0
             identity_reject_reasons: dict[str, int] = {}
+            identity_decision_frame = new_identity_decision_counters()
+            identity_quality_stats_frame = new_identity_quality_counters()
             now_ms = int(time.time() * 1000)
 
             if (
@@ -2163,6 +2803,25 @@ def run_parity(config: dict[str, Any]) -> int:
                             )
                         continue
 
+                    accepted_pose_mask, _reason, _details = (
+                        apply_pose_mask_quality_verifier(
+                            face_detection=face_det,
+                            verifier_enabled=smartface_identity_quality_verifier_enabled,
+                            hard_gate_enabled=smartface_identity_pose_mask_gate_enabled,
+                            max_abs_yaw=smartface_identity_max_abs_yaw_deg,
+                            max_abs_pitch=smartface_identity_max_abs_pitch_deg,
+                            max_abs_roll=smartface_identity_max_abs_roll_deg,
+                            mask_confidence_min=smartface_identity_mask_confidence_min,
+                            quality_stats_frame=identity_quality_stats_frame,
+                            quality_stats_cumulative=identity_quality_stats_cumulative,
+                            identity_reject_reasons=identity_reject_reasons,
+                        )
+                    )
+                    if not accepted_pose_mask:
+                        identity_rejected_count += 1
+                        continue
+
+                    decision_audit: dict[str, Any] = {}
                     identity_id, distance, _is_new = match_embedding_identity(
                         identity_state=identity_state,
                         embedding=embedding,
@@ -2200,6 +2859,26 @@ def run_parity(config: dict[str, Any]) -> int:
                                     True,
                                 )
                             )
+                            else None
+                        ),
+                        verified_allowlist_mode=bool(
+                            detector.get("identity_verified_allowlist_mode", False)
+                        ),
+                        audit=decision_audit,
+                    )
+                    bump_identity_decision_counter(
+                        identity_decision_frame,
+                        (
+                            str(decision_audit.get("decision"))
+                            if isinstance(decision_audit.get("decision"), str)
+                            else None
+                        ),
+                    )
+                    bump_identity_decision_counter(
+                        identity_decision_cumulative,
+                        (
+                            str(decision_audit.get("decision"))
+                            if isinstance(decision_audit.get("decision"), str)
                             else None
                         ),
                     )
@@ -2340,6 +3019,17 @@ def run_parity(config: dict[str, Any]) -> int:
                 )
                 emit_json(ev)
 
+            identity_quality_summary_payload = build_identity_quality_summary_payload(
+                verifier_enabled=smartface_identity_quality_verifier_enabled,
+                hard_gate_enabled=smartface_identity_pose_mask_gate_enabled,
+                quality_stats_frame=identity_quality_stats_frame,
+                quality_stats_cumulative=identity_quality_stats_cumulative,
+                max_abs_yaw=smartface_identity_max_abs_yaw_deg,
+                max_abs_pitch=smartface_identity_max_abs_pitch_deg,
+                max_abs_roll=smartface_identity_max_abs_roll_deg,
+                mask_confidence_min=smartface_identity_mask_confidence_min,
+            )
+
             heartbeat = {
                 "functionName": "ParityFrameSummary",
                 "payload": {
@@ -2383,8 +3073,21 @@ def run_parity(config: dict[str, Any]) -> int:
                     "identityPreventDuplicatePerFrame": detector.get(
                         "identity_prevent_duplicate_per_frame"
                     ),
+                    "identityVerifiedAllowlistMode": detector.get(
+                        "identity_verified_allowlist_mode"
+                    ),
+                    "identityVerifiedAllowlistSize": len(
+                        _as_string_set(
+                            _normalize_uiface_policy(
+                                identity_state.get("uifacePolicy")
+                            ).get("verifiedUniqueIds")
+                        )
+                    ),
                     "identityRejectedCount": identity_rejected_count,
                     "identityRejectReasons": identity_reject_reasons,
+                    "identityDecisionAuditFrame": identity_decision_frame,
+                    "identityDecisionAuditCumulative": identity_decision_cumulative,
+                    **identity_quality_summary_payload,
                     "faceScoreTelemetry": face_score_telemetry,
                     "motionBoxCount": len(motion_boxes),
                     "detectorBackend": detector.get("name"),
@@ -2585,6 +3288,45 @@ def parse_args() -> argparse.Namespace:
     )
     parser.set_defaults(smartface_identity_prevent_duplicate_per_frame=True)
     parser.add_argument(
+        "--smartface-identity-verified-allowlist-mode",
+        action="store_true",
+        help="Restrict identity profile matching to uiface verified unique IDs when present",
+    )
+    parser.add_argument(
+        "--smartface-identity-quality-verifier-enabled",
+        action="store_true",
+        help="Enable pose/mask quality verifier before identity matching",
+    )
+    parser.add_argument(
+        "--smartface-identity-pose-mask-gate-enabled",
+        action="store_true",
+        help="Hard-gate identity matching when pose/mask quality is out of policy",
+    )
+    parser.add_argument(
+        "--smartface-identity-max-abs-yaw-deg",
+        type=float,
+        default=None,
+        help="Maximum allowed absolute yaw angle before gating",
+    )
+    parser.add_argument(
+        "--smartface-identity-max-abs-pitch-deg",
+        type=float,
+        default=None,
+        help="Maximum allowed absolute pitch angle before gating",
+    )
+    parser.add_argument(
+        "--smartface-identity-max-abs-roll-deg",
+        type=float,
+        default=None,
+        help="Maximum allowed absolute roll angle before gating",
+    )
+    parser.add_argument(
+        "--smartface-identity-mask-confidence-min",
+        type=float,
+        default=None,
+        help="Minimum mask confidence allowed before gating",
+    )
+    parser.add_argument(
         "--identity-gallery-path",
         default=None,
         help="Optional JSON path for persisted identity gallery",
@@ -2675,6 +3417,9 @@ def main() -> int:
         "smartface_identity_prevent_duplicate_per_frame": bool(
             args.smartface_identity_prevent_duplicate_per_frame
         ),
+        "smartface_identity_verified_allowlist_mode": bool(
+            args.smartface_identity_verified_allowlist_mode
+        ),
         "identity_gallery_path": args.identity_gallery_path,
         "identity_gallery_max_profiles": max(
             1,
@@ -2693,6 +3438,30 @@ def main() -> int:
             int(args.identity_gallery_prune_interval_frames),
         ),
     }
+    if bool(args.smartface_identity_quality_verifier_enabled):
+        cfg["smartface_identity_quality_verifier_enabled"] = True
+    if bool(args.smartface_identity_pose_mask_gate_enabled):
+        cfg["smartface_identity_pose_mask_gate_enabled"] = True
+    if args.smartface_identity_max_abs_yaw_deg is not None:
+        cfg["smartface_identity_max_abs_yaw_deg"] = max(
+            0.0,
+            float(args.smartface_identity_max_abs_yaw_deg),
+        )
+    if args.smartface_identity_max_abs_pitch_deg is not None:
+        cfg["smartface_identity_max_abs_pitch_deg"] = max(
+            0.0,
+            float(args.smartface_identity_max_abs_pitch_deg),
+        )
+    if args.smartface_identity_max_abs_roll_deg is not None:
+        cfg["smartface_identity_max_abs_roll_deg"] = max(
+            0.0,
+            float(args.smartface_identity_max_abs_roll_deg),
+        )
+    if args.smartface_identity_mask_confidence_min is not None:
+        cfg["smartface_identity_mask_confidence_min"] = max(
+            0.0,
+            min(1.0, float(args.smartface_identity_mask_confidence_min)),
+        )
     return run_parity(cfg)
 
 

@@ -19,6 +19,16 @@ DEFAULT_OUTPUT_REPORT = (
     REPO_ROOT
     / "analysis/harness/reports/semantic_validation/rtsp_face_tuning_recommendation.json"
 )
+IDENTITY_AUDIT_KEYS = (
+    "strict_match",
+    "merge_recover",
+    "new_identity_split_guard",
+    "new_identity_reserved",
+    "new_identity_threshold",
+    "new_identity_no_profiles",
+    "new_identity_invalid_embedding",
+    "unknown",
+)
 
 
 def _as_float(value: Any) -> float | None:
@@ -104,8 +114,11 @@ def analyze_parity_jsonl(
     p90_scores: list[float] = []
     min_score_thresholds: list[float] = []
     stable_frame_thresholds: list[int] = []
+    split_guard_ratios: list[float] = []
+    merge_recover_thresholds: list[float] = []
     face_streaks: list[int] = []
     stability_ratios: list[float] = []
+    identity_audit_totals: dict[str, int] = {key: 0 for key in IDENTITY_AUDIT_KEYS}
 
     for payload in frame_payloads:
         face_count = _as_non_negative_int(payload.get("faceCount"))
@@ -132,6 +145,16 @@ def analyze_parity_jsonl(
         if threshold is not None:
             min_score_thresholds.append(_clamp(threshold, 0.0, 1.0))
 
+        split_guard_ratio = _as_float(payload.get("identitySplitGuardRatio"))
+        if split_guard_ratio is not None:
+            split_guard_ratios.append(_clamp(split_guard_ratio, 0.0, 1.0))
+
+        merge_recover_threshold = _as_float(
+            payload.get("identityMergeRecoverThreshold")
+        )
+        if merge_recover_threshold is not None:
+            merge_recover_thresholds.append(_clamp(merge_recover_threshold, 0.0, 2.0))
+
         stable_threshold = _as_non_negative_int(
             payload.get("smartfaceStableFramesThreshold")
         )
@@ -146,6 +169,19 @@ def analyze_parity_jsonl(
 
         if face_count > 0:
             stability_ratios.append(_clamp(stable_count / face_count, 0.0, 1.0))
+
+        identity_decision_audit = payload.get("identityDecisionAuditFrame")
+        if isinstance(identity_decision_audit, dict):
+            for key in IDENTITY_AUDIT_KEYS:
+                raw = identity_decision_audit.get(key)
+                if not isinstance(raw, (int, float)):
+                    continue
+                numeric = float(raw)
+                if not math.isfinite(numeric) or numeric < 0:
+                    continue
+                identity_audit_totals[key] = int(
+                    identity_audit_totals[key] + int(numeric)
+                )
 
         face_score_telemetry = payload.get("faceScoreTelemetry")
         if not isinstance(face_score_telemetry, dict):
@@ -170,6 +206,14 @@ def analyze_parity_jsonl(
         else 2
     )
 
+    current_split_guard_ratio = _quantile(split_guard_ratios, 0.5)
+    if current_split_guard_ratio is None:
+        current_split_guard_ratio = 0.90
+
+    current_merge_recover_threshold = _quantile(merge_recover_thresholds, 0.5)
+    if current_merge_recover_threshold is None:
+        current_merge_recover_threshold = 0.45
+
     median_acceptance = _quantile(acceptance_rates, 0.5)
     median_stability_ratio = _quantile(stability_ratios, 0.5)
     median_p90 = _quantile(p90_scores, 0.5)
@@ -177,6 +221,18 @@ def analyze_parity_jsonl(
     median_face_streak = (
         int(round(median_face_streak_f)) if median_face_streak_f is not None else 0
     )
+
+    identity_decision_total = sum(identity_audit_totals.values())
+
+    def _audit_rate(key: str) -> float | None:
+        if identity_decision_total <= 0:
+            return None
+        return float(identity_audit_totals.get(key, 0) / identity_decision_total)
+
+    strict_match_rate = _audit_rate("strict_match")
+    merge_recover_rate = _audit_rate("merge_recover")
+    split_guard_new_rate = _audit_rate("new_identity_split_guard")
+    threshold_new_rate = _audit_rate("new_identity_threshold")
 
     recommended_min_score = current_min_score
     min_score_action = "keep"
@@ -211,6 +267,48 @@ def analyze_parity_jsonl(
             stable_frames_action = "increase"
             recommended_stable_frames = current_stable_frames + 1
 
+    recommended_split_guard_ratio = current_split_guard_ratio
+    split_guard_action = "keep"
+    if split_guard_new_rate is not None:
+        if split_guard_new_rate >= 0.18:
+            split_guard_action = "decrease"
+            recommended_split_guard_ratio = _clamp(
+                current_split_guard_ratio - 0.05,
+                0.65,
+                0.99,
+            )
+        elif (
+            strict_match_rate is not None
+            and strict_match_rate >= 0.85
+            and threshold_new_rate is not None
+            and threshold_new_rate <= 0.02
+            and split_guard_new_rate <= 0.03
+        ):
+            split_guard_action = "increase"
+            recommended_split_guard_ratio = _clamp(
+                current_split_guard_ratio + 0.03,
+                0.65,
+                0.99,
+            )
+
+    recommended_merge_recover_threshold = current_merge_recover_threshold
+    merge_recover_action = "keep"
+    if threshold_new_rate is not None and merge_recover_rate is not None:
+        if threshold_new_rate >= 0.20 and merge_recover_rate <= 0.05:
+            merge_recover_action = "increase"
+            recommended_merge_recover_threshold = _clamp(
+                current_merge_recover_threshold + 0.03,
+                0.30,
+                0.90,
+            )
+        elif merge_recover_rate >= 0.35 and threshold_new_rate <= 0.05:
+            merge_recover_action = "decrease"
+            recommended_merge_recover_threshold = _clamp(
+                current_merge_recover_threshold - 0.03,
+                0.30,
+                0.90,
+            )
+
     rationale: list[str] = []
     if min_score_action == "decrease":
         rationale.append(
@@ -236,6 +334,32 @@ def analyze_parity_jsonl(
     else:
         rationale.append(
             "Current stable-frame gate appears consistent with observed streak behavior."
+        )
+
+    if split_guard_action == "decrease":
+        rationale.append(
+            "Split-guard new-ID decisions are frequent; lowering split guard should reduce unnecessary identity splits."
+        )
+    elif split_guard_action == "increase":
+        rationale.append(
+            "Strict matches dominate with few split events; increasing split guard can reduce accidental merges."
+        )
+    else:
+        rationale.append(
+            "Split guard appears balanced against observed strict/split decision mix."
+        )
+
+    if merge_recover_action == "increase":
+        rationale.append(
+            "Threshold-based new identities dominate while merge-recover is rare; increasing merge-recover threshold can reduce duplicate IDs."
+        )
+    elif merge_recover_action == "decrease":
+        rationale.append(
+            "Merge-recover decisions dominate; decreasing merge-recover threshold can tighten identity reuse."
+        )
+    else:
+        rationale.append(
+            "Merge-recover threshold appears aligned with observed recovery behavior."
         )
 
     frames_with_candidates = sum(1 for count in raw_counts if count > 0)
@@ -264,12 +388,30 @@ def analyze_parity_jsonl(
             "medianFaceStreak": median_face_streak,
             "medianMinScoreThreshold": current_min_score,
             "medianStableFramesThreshold": current_stable_frames,
+            "medianIdentitySplitGuardRatio": current_split_guard_ratio,
+            "medianIdentityMergeRecoverThreshold": current_merge_recover_threshold,
+            "identityDecisionTotal": identity_decision_total,
+            "identityDecisionCounts": identity_audit_totals,
+            "strictMatchRate": strict_match_rate,
+            "mergeRecoverRate": merge_recover_rate,
+            "splitGuardNewRate": split_guard_new_rate,
+            "thresholdNewRate": threshold_new_rate,
         },
         "recommendation": {
             "smartfaceMinScore": round(float(recommended_min_score), 4),
             "smartfaceStableFrames": int(recommended_stable_frames),
             "minScoreAction": min_score_action,
             "stableFramesAction": stable_frames_action,
+            "smartfaceIdentitySplitGuardRatio": round(
+                float(recommended_split_guard_ratio),
+                4,
+            ),
+            "smartfaceIdentityMergeRecoverThreshold": round(
+                float(recommended_merge_recover_threshold),
+                4,
+            ),
+            "splitGuardAction": split_guard_action,
+            "mergeRecoverAction": merge_recover_action,
             "rationale": rationale,
         },
     }

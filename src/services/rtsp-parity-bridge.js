@@ -215,6 +215,62 @@ class RtspParityBridge {
       args.push('--smartface-identity-allow-duplicate-per-frame');
     }
 
+    if (this.config.smartfaceIdentityVerifiedAllowlistMode === true) {
+      args.push('--smartface-identity-verified-allowlist-mode');
+    }
+
+    if (this.config.smartfaceIdentityQualityVerifierEnabled === true) {
+      args.push('--smartface-identity-quality-verifier-enabled');
+    }
+
+    if (this.config.smartfaceIdentityPoseMaskGateEnabled === true) {
+      args.push('--smartface-identity-pose-mask-gate-enabled');
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMaxAbsYawDeg === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMaxAbsYawDeg) &&
+      this.config.smartfaceIdentityMaxAbsYawDeg >= 0
+    ) {
+      args.push(
+        '--smartface-identity-max-abs-yaw-deg',
+        String(this.config.smartfaceIdentityMaxAbsYawDeg)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMaxAbsPitchDeg === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMaxAbsPitchDeg) &&
+      this.config.smartfaceIdentityMaxAbsPitchDeg >= 0
+    ) {
+      args.push(
+        '--smartface-identity-max-abs-pitch-deg',
+        String(this.config.smartfaceIdentityMaxAbsPitchDeg)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMaxAbsRollDeg === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMaxAbsRollDeg) &&
+      this.config.smartfaceIdentityMaxAbsRollDeg >= 0
+    ) {
+      args.push(
+        '--smartface-identity-max-abs-roll-deg',
+        String(this.config.smartfaceIdentityMaxAbsRollDeg)
+      );
+    }
+
+    if (
+      typeof this.config.smartfaceIdentityMaskConfidenceMin === 'number' &&
+      Number.isFinite(this.config.smartfaceIdentityMaskConfidenceMin) &&
+      this.config.smartfaceIdentityMaskConfidenceMin >= 0
+    ) {
+      args.push(
+        '--smartface-identity-mask-confidence-min',
+        String(this.config.smartfaceIdentityMaskConfidenceMin)
+      );
+    }
+
     if (typeof this.config.identityGalleryPath === 'string' && this.config.identityGalleryPath) {
       args.push('--identity-gallery-path', this.config.identityGalleryPath);
     }

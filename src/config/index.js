@@ -81,6 +81,19 @@ class ConfigManager {
           smartfaceIdentityMergeRecoverThreshold: envFloat('RTSP_PARITY_SMARTFACE_IDENTITY_MERGE_RECOVER_THRESHOLD', 0.45),
           smartfaceIdentityMergeRecoverMinSeen: envInt('RTSP_PARITY_SMARTFACE_IDENTITY_MERGE_RECOVER_MIN_SEEN', 5),
           smartfaceIdentityPreventDuplicatePerFrame: process.env.RTSP_PARITY_SMARTFACE_IDENTITY_PREVENT_DUPLICATE_PER_FRAME !== 'false',
+          smartfaceIdentityVerifiedAllowlistMode: process.env.RTSP_PARITY_SMARTFACE_IDENTITY_VERIFIED_ALLOWLIST_MODE === 'true',
+          smartfaceIdentityQualityVerifierEnabled:
+            process.env.RTSP_PARITY_SMARTFACE_IDENTITY_QUALITY_VERIFIER_ENABLED === undefined
+              ? null
+              : process.env.RTSP_PARITY_SMARTFACE_IDENTITY_QUALITY_VERIFIER_ENABLED === 'true',
+          smartfaceIdentityPoseMaskGateEnabled:
+            process.env.RTSP_PARITY_SMARTFACE_IDENTITY_POSE_MASK_GATE_ENABLED === undefined
+              ? null
+              : process.env.RTSP_PARITY_SMARTFACE_IDENTITY_POSE_MASK_GATE_ENABLED === 'true',
+          smartfaceIdentityMaxAbsYawDeg: envFloat('RTSP_PARITY_SMARTFACE_IDENTITY_MAX_ABS_YAW_DEG', null),
+          smartfaceIdentityMaxAbsPitchDeg: envFloat('RTSP_PARITY_SMARTFACE_IDENTITY_MAX_ABS_PITCH_DEG', null),
+          smartfaceIdentityMaxAbsRollDeg: envFloat('RTSP_PARITY_SMARTFACE_IDENTITY_MAX_ABS_ROLL_DEG', null),
+          smartfaceIdentityMaskConfidenceMin: envFloat('RTSP_PARITY_SMARTFACE_IDENTITY_MASK_CONFIDENCE_MIN', null),
           identityGalleryPath: process.env.RTSP_PARITY_IDENTITY_GALLERY_PATH || null,
           identityGalleryMaxProfiles: envInt('RTSP_PARITY_IDENTITY_GALLERY_MAX_PROFILES', 2000),
           identityGallerySaveIntervalFrames: envInt('RTSP_PARITY_IDENTITY_GALLERY_SAVE_INTERVAL_FRAMES', 30),
@@ -269,6 +282,13 @@ class ConfigManager {
           smartfaceIdentityMergeRecoverThreshold: 0.45,
           smartfaceIdentityMergeRecoverMinSeen: 5,
           smartfaceIdentityPreventDuplicatePerFrame: true,
+          smartfaceIdentityVerifiedAllowlistMode: false,
+          smartfaceIdentityQualityVerifierEnabled: null,
+          smartfaceIdentityPoseMaskGateEnabled: null,
+          smartfaceIdentityMaxAbsYawDeg: null,
+          smartfaceIdentityMaxAbsPitchDeg: null,
+          smartfaceIdentityMaxAbsRollDeg: null,
+          smartfaceIdentityMaskConfidenceMin: null,
           identityGalleryPath: null,
           identityGalleryMaxProfiles: 2000,
           identityGallerySaveIntervalFrames: 30,

@@ -88,16 +88,23 @@ For SmartFace-assisted face events, use:
   - `detection.rtspParity.identityGallerySaveIntervalFrames`
   - `detection.rtspParity.identityGalleryMaxIdleMs`
   - `detection.rtspParity.identityGalleryPruneIntervalFrames`
-- Optional identity quality gate settings:
+ - Optional identity quality gate settings:
   - `detection.rtspParity.smartfaceIdentityMinFaceScore`
   - `detection.rtspParity.smartfaceIdentityMinFaceAreaRatio`
   - `detection.rtspParity.smartfaceIdentityRequireLandmarks`
+  - `detection.rtspParity.smartfaceIdentityQualityVerifierEnabled`
+  - `detection.rtspParity.smartfaceIdentityPoseMaskGateEnabled`
+  - `detection.rtspParity.smartfaceIdentityMaxAbsYawDeg`
+  - `detection.rtspParity.smartfaceIdentityMaxAbsPitchDeg`
+  - `detection.rtspParity.smartfaceIdentityMaxAbsRollDeg`
+  - `detection.rtspParity.smartfaceIdentityMaskConfidenceMin`
 - Optional identity merge/split correction settings:
   - `detection.rtspParity.smartfaceIdentitySplitGuardRatio`
   - `detection.rtspParity.smartfaceIdentitySplitGuardMaxSeen`
   - `detection.rtspParity.smartfaceIdentityMergeRecoverThreshold`
   - `detection.rtspParity.smartfaceIdentityMergeRecoverMinSeen`
   - `detection.rtspParity.smartfaceIdentityPreventDuplicatePerFrame`
+  - `detection.rtspParity.smartfaceIdentityVerifiedAllowlistMode`
 
 The backend keeps person/vehicle inference and adds face detection with score gating and frame-stability filtering.
 When `smartface_ncnn` is used, the runner decodes face boxes from the enroll model stride heads (`classification_stride_*` + `regression_stride_*`) and applies NMS before score/stability gates.
@@ -106,6 +113,11 @@ If `identityGalleryPath` is set, those identity profiles are saved and reloaded 
 If `identityGalleryMaxIdleMs` is set, profiles that have not been seen for longer than that time are removed automatically.
 Identity quality gate settings help prevent weak detections from being saved into the gallery.
 Merge/split correction settings reduce duplicate IDs and accidental identity merges.
+When `smartfaceIdentityVerifiedAllowlistMode` is enabled, matching can be restricted to identities listed in uiface `VerifiedUniqueIds`.
+
+Quality Verifier Telemetry and Hard Gate Guidance:
+- Telemetry-first behavior: ParityFrameSummary payload now exposes the SmartFace tuning telemetry, including per-frame and running totals, to guide tuning decisions without modifying runtime logic.
+- Optional hard gate guidance: To enforce stricter identity decisions, enable smartfaceIdentityQualityVerifierEnabled and tune the pose thresholds and mask confidence as needed; start from conservative values (e.g., yaw/pitch/roll limits around +/- 30-45 degrees, minimum mask confidence around 0.6-0.8) and adjust based on histogram feedback.
 
 `ParityFrameSummary` now includes SmartFace tuning telemetry in `payload`:
 
@@ -115,9 +127,12 @@ Merge/split correction settings reduce duplicate IDs and accidental identity mer
 - `stableFaceCount`, `smartfaceMinScoreThreshold`, and `smartfaceStableFramesThreshold`
 - `identityIds`, `identityCount`, `identityCandidateCount`, and `identityProfileCount`
 - `identityDistanceThreshold` and `identityStableFramesThreshold`
-- `identityMinFaceScore`, `identityMinFaceAreaRatio`, and `identityRequireLandmarks`
-- `identitySplitGuardRatio`, `identitySplitGuardMaxSeen`, `identityMergeRecoverThreshold`, `identityMergeRecoverMinSeen`, and `identityPreventDuplicatePerFrame`
+- `identityMinFaceScore`, `identityMinFaceAreaRatio`, and `identityRequireLandmarks`, `identityQualityVerifierEnabled`, `identityPoseMaskGateEnabled`, `identityMaxAbsYawDeg`, `identityMaxAbsPitchDeg`, `identityMaxAbsRollDeg`, `identityMaskConfidenceMin`
+- `identitySplitGuardRatio`, `identitySplitGuardMaxSeen`, `identityMergeRecoverThreshold`, `identityMergeRecoverMinSeen`, `identityPreventDuplicatePerFrame`, and `identityVerifiedAllowlistMode`
+- `identityVerifiedAllowlistSize`
 - `identityRejectedCount` and `identityRejectReasons`
+- `identityDecisionAuditFrame` (per-frame decision counts)
+- `identityDecisionAuditCumulative` (running totals over time)
 
 Suggested tuning loop:
 
@@ -134,7 +149,14 @@ analysis/harness/.venv-loader-probe/bin/python bin/rtsp-face-tuning-recommender.
   --output analysis/harness/reports/semantic_validation/rtsp_face_tuning_recommendation.json
 ```
 
-The JSONL input should contain one event per line and include `ParityFrameSummary` payload entries. The report emits recommended `smartfaceMinScore` and `smartfaceStableFrames` values with action labels (`increase`/`decrease`/`keep`) and rationale.
+The JSONL input should contain one event per line and include `ParityFrameSummary` payload entries. The report emits recommended values for:
+
+- `smartfaceMinScore`
+- `smartfaceStableFrames`
+- `smartfaceIdentitySplitGuardRatio`
+- `smartfaceIdentityMergeRecoverThreshold`
+
+Each recommendation includes action labels (`increase`/`decrease`/`keep`) plus rationale text.
 
 ## Runtime vs Research Files
 
